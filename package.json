@@ -2,6 +2,6 @@
   "name": "langtube",
   "version": "1.0.0",
   "dependencies": {
-    "youtube-transcript": "^1.0.6"
+    "youtubei.js": "^10.4.0"
   }
 }
