@@ -448,11 +448,11 @@ image(logo, 35, -40, 256, 144);
 
   drawCaptions(841, 130, 384, 516);
 
-  // captions language pill, bottom of the panel
+   // captions language pill, bottom of the panel
   fill(255);
   stroke(0);
   strokeWeight(0);
-  rect(879, 663, 338, 39, 19);
+  rect(841, 663, 384, 39, 19);
   noStroke();
   fill(0);
   textFont("Courier New", 15);
