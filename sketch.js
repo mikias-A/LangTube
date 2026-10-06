@@ -28,6 +28,11 @@ let ytPlayer = null;
 let ytReady = false;
 let pendingVideoId = null;
 
+let captionCues = [];
+let captionsLoading = false;
+let captionsError = null;
+let scrollOffset = 0;
+
 function extractVideoID(url) {
   let regExp = /(?:youtube\.com.*(?:\?|&)v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
   let match = url.match(regExp);
@@ -53,6 +58,7 @@ function createOrLoadPlayer(videoId) {
   } else {
     ytPlayer.loadVideoById(videoId);
   }
+  fetchTranscript(videoId);
 }
 
 function loadYouTubeVideo(url) {
@@ -66,6 +72,89 @@ function loadYouTubeVideo(url) {
   } else {
     createOrLoadPlayer(id);
   }
+}
+
+async function fetchTranscript(videoId) {
+  captionCues = [];
+  captionsError = null;
+  captionsLoading = true;
+
+  try {
+    let res = await fetch(`/api/transcript?videoId=${videoId}`);
+    let data = await res.json();
+
+    if (data.error) {
+      captionsError = data.error;
+    } else {
+      captionCues = data.cues;
+    }
+    captionsLoading = false;
+  } catch (err) {
+    console.log("Caption fetch failed:", err);
+    captionsError = "Couldn't load captions.";
+    captionsLoading = false;
+  }
+}
+
+function getActiveCueIndex(currentTime) {
+  for (let i = captionCues.length - 1; i >= 0; i--) {
+    if (currentTime >= captionCues[i].start) return i;
+  }
+  return -1;
+}
+
+function drawCaptions(panelX, panelY, panelW, panelH) {
+  drawingContext.save();
+  drawingContext.beginPath();
+  drawingContext.rect(panelX, panelY, panelW, panelH);
+  drawingContext.clip();
+
+  if (captionsLoading) {
+    fill(0);
+    textFont("Courier New", 16);
+    textAlign(LEFT, TOP);
+    text("Loading captions...", panelX + 24, panelY + 24);
+  } else if (captionsError) {
+    fill(0);
+    textFont("Courier New", 16);
+    textAlign(LEFT, TOP);
+    text(captionsError, panelX + 24, panelY + 24);
+  } else if (captionCues.length > 0 && ytPlayer && ytPlayer.getCurrentTime) {
+    let currentTime = ytPlayer.getCurrentTime();
+    let activeIndex = getActiveCueIndex(currentTime);
+
+    let lineHeight = 70;
+    let targetScroll = activeIndex * lineHeight;
+    scrollOffset = lerp(scrollOffset, targetScroll, 0.1);
+
+    textFont("Courier New", 16);
+    textAlign(LEFT, TOP);
+
+    for (let i = 0; i < captionCues.length; i++) {
+      let y = panelY + 40 + (i * lineHeight) - scrollOffset;
+      if (y < panelY - lineHeight || y > panelY + panelH) continue;
+
+      if (i === activeIndex) {
+        noStroke();
+        fill(43, 251, 236, 80);
+        rect(panelX + 10, y - 5, panelW - 20, lineHeight - 10, 8);
+      }
+
+      noStroke();
+      fill(0);
+      let timeLabel = formatTime(captionCues[i].start);
+      text(timeLabel, panelX + 24, y);
+      text(captionCues[i].text, panelX + 80, y, panelW - 104);
+    }
+  }
+
+  drawingContext.restore();
+}
+
+function formatTime(seconds) {
+  let m = Math.floor(seconds / 60);
+  let s = Math.floor(seconds % 60);
+  return m + ":" + (s < 10 ? "0" : "") + s;
 }
 
 async function setup() {
@@ -357,10 +446,7 @@ image(logo, 35, -40, 256, 144);
   strokeWeight(0);
   rect(841, 130, 384, 516, 24);
 
-  noStroke();
-  fill(0);
-  textFont("Courier New", 16);
-  textAlign(LEFT, TOP);
+  drawCaptions(841, 130, 384, 516);
 
   // captions language pill, bottom of the panel
   fill(255);
