@@ -16,7 +16,15 @@ export default async function handler(req, res) {
 
     const match = html.match(/"captionTracks":(\[.*?\])/);
     if (!match) {
-      return res.status(404).json({ error: "No captions found for this video." });
+      return res.status(404).json({
+        error: "No captions found for this video.",
+        debug: {
+          htmlLength: html.length,
+          hasCaptionTracksString: html.includes("captionTracks"),
+          hasConsentForm: html.includes("consent"),
+          first300chars: html.substring(0, 300)
+        }
+      });
     }
 
     const tracks = JSON.parse(match[1]);
@@ -43,6 +51,6 @@ export default async function handler(req, res) {
 
     res.status(200).json({ cues });
   } catch (err) {
-    res.status(500).json({ error: "Failed to fetch captions." });
+    res.status(500).json({ error: "Failed to fetch captions.", debug: err.message });
   }
 }
