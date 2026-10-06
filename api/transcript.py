@@ -4,12 +4,6 @@ import re
 import requests
 from urllib.parse import urlparse, parse_qs
 
-PROXY_USER = "hprytmcu"
-PROXY_PASS = "7ls2auaubg3x"
-PROXIES = {
-    "http": f"http://{PROXY_USER}:{PROXY_PASS}@p.webshare.io:80/",
-    "https": f"http://{PROXY_USER}:{PROXY_PASS}@p.webshare.io:80/",
-}
 
 ANDROID_USER_AGENT = "com.google.android.youtube/19.29.37 (Linux; U; Android 11) gzip"
 INNERTUBE_KEY = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
