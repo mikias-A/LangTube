@@ -7,30 +7,35 @@ export default async function handler(req, res) {
   }
 
   try {
-    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    const playerRes = await fetch(
+      "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoId: videoId,
+          context: {
+            client: {
+              clientName: "ANDROID",
+              clientVersion: "19.09.37"
+            }
+          }
+        })
       }
-    });
-    const html = await pageRes.text();
+    );
 
-    const match = html.match(/"captionTracks":(\[.*?\])/);
-    if (!match) {
+    const data = await playerRes.json();
+    const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+
+    if (!tracks || tracks.length === 0) {
       return res.status(404).json({
         error: "No captions found for this video.",
-        debug: {
-          htmlLength: html.length,
-          hasCaptionTracksString: html.includes("captionTracks"),
-          hasPlayerResponse: html.includes("ytInitialPlayerResponse")
-        }
+        debug: { hasCaptions: !!data?.captions, topLevelKeys: Object.keys(data || {}) }
       });
     }
 
-    const tracks = JSON.parse(match[1]);
     const track = tracks.find(t => t.languageCode === "en") || tracks[0];
-    const baseUrl = track.baseUrl.replace(/\\u0026/g, "&");
-
-    const capRes = await fetch(baseUrl);
+    const capRes = await fetch(track.baseUrl);
     const capXML = await capRes.text();
 
     const cues = [];
