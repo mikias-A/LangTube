@@ -1,12 +1,19 @@
-from concurrent.futures import ThreadPoolExecutor
+import time
 from flask import Flask, request, jsonify, send_from_directory
 from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
 from deep_translator import GoogleTranslator
+from deep_translator.exceptions import TooManyRequests
 
 app = Flask(__name__, static_folder=".", static_url_path="")
 
 original_cache = {}
 translation_cache = {}
+
+REQUEST_GAP = 0.4
+
+
+class RateLimited(Exception):
+    pass
 
 
 def get_original(video_id):
@@ -32,15 +39,6 @@ def get_original(video_id):
     return original_cache[video_id]
 
 
-def translate_one(translator, text):
-    if not text.strip():
-        return text
-    try:
-        return translator.translate(text) or text
-    except Exception:
-        return text
-
-
 def make_chunks(texts):
     chunks = []
     current = []
@@ -58,24 +56,41 @@ def make_chunks(texts):
     return chunks
 
 
+def translate_text(translator, text):
+    if not text.strip():
+        return text
+    time.sleep(REQUEST_GAP)
+    try:
+        return translator.translate(text) or text
+    except TooManyRequests:
+        raise RateLimited()
+    except Exception:
+        return text
+
+
 def translate_chunk(chunk, lang):
     translator = GoogleTranslator(source="auto", target=lang)
+    time.sleep(REQUEST_GAP)
     try:
         parts = (translator.translate("\n".join(chunk)) or "").split("\n")
         if len(parts) == len(chunk):
             return parts
+    except TooManyRequests:
+        raise RateLimited()
     except Exception:
         pass
-    return [translate_one(translator, t) for t in chunk]
+    return [translate_text(translator, t) for t in chunk]
 
 
 def translate_texts(texts, lang):
     chunks = make_chunks(texts)
     print(f"Translating into {lang} in {len(chunks)} chunks...", flush=True)
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        results = list(pool.map(lambda c: translate_chunk(c, lang), chunks))
+    results = []
+    for n, chunk in enumerate(chunks, 1):
+        results.extend(translate_chunk(chunk, lang))
+        print(f"Translated chunk {n} of {len(chunks)}", flush=True)
     print("Translation done.", flush=True)
-    return [t for part in results for t in part]
+    return results
 
 
 def get_cues(video_id, lang):
@@ -105,6 +120,12 @@ def transcript():
         return jsonify(error="Missing videoId")
     try:
         return jsonify(cues=get_cues(video_id, lang))
+    except RateLimited:
+        print("Google is rate-limiting translation requests.", flush=True)
+        return jsonify(
+            error="Translation rate-limited.",
+            debug="Google Translate said too many requests. Wait and try again.",
+        )
     except Exception as e:
         return jsonify(
             error="Couldn't load captions.",
