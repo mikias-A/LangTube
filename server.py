@@ -1,7 +1,22 @@
 from flask import Flask, request, jsonify, send_from_directory
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
 
 app = Flask(__name__, static_folder=".", static_url_path="")
+
+
+def pick_transcript(video_id, lang):
+    transcript_list = YouTubeTranscriptApi().list(video_id)
+    try:
+        return transcript_list.find_transcript([lang])
+    except NoTranscriptFound:
+        pass
+    try:
+        base = transcript_list.find_transcript(["en"])
+    except NoTranscriptFound:
+        base = next(iter(transcript_list))
+    if base.is_translatable:
+        return base.translate(lang)
+    return base
 
 
 @app.route("/")
@@ -12,10 +27,11 @@ def index():
 @app.route("/api/transcript")
 def transcript():
     video_id = request.args.get("videoId")
+    lang = request.args.get("lang", "en")
     if not video_id:
         return jsonify(error="Missing videoId")
     try:
-        t = YouTubeTranscriptApi().fetch(video_id, languages=["en", "es", "ko"])
+        t = pick_transcript(video_id, lang).fetch()
         cues = [
             {"start": s.start, "end": s.start + s.duration, "text": s.text}
             for s in t
