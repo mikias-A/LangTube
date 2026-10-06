@@ -334,7 +334,6 @@ image(logo, 35, -40, 256, 144);
   fill(0);
   textFont("Courier New", 22);
   textAlign(LEFT, CENTER);
-  text("DIXIE'S LAND", 55, 133 + 21);
 
   // video box (placeholder rectangle — real video element comes in Weekend 2)
   fill(20);
@@ -351,7 +350,6 @@ image(logo, 35, -40, 256, 144);
   fill(0);
   textFont("Courier New", 18);
   textAlign(LEFT, CENTER);
-  text("2nd South Carolina String Band", 50, 663 + 19);
 
   // captions panel (big rounded rect on the right)
   fill(255);
@@ -363,7 +361,6 @@ image(logo, 35, -40, 256, 144);
   fill(0);
   textFont("Courier New", 16);
   textAlign(LEFT, TOP);
-  text("0:55  In Dixie's Land I'll\ntake my stand, to\nlive and die in Dixie!", 865, 280);
 
   // captions language pill, bottom of the panel
   fill(255);
@@ -374,5 +371,4 @@ image(logo, 35, -40, 256, 144);
   fill(0);
   textFont("Courier New", 15);
   textAlign(CENTER, CENTER);
-  text("Captions: English", 879 + 169, 683 + 13);
 }
