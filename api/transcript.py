@@ -1,5 +1,6 @@
 from http.server import BaseHTTPRequestHandler
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api.proxies import WebshareProxyConfig
 import json
 from urllib.parse import urlparse, parse_qs
 
@@ -18,7 +19,13 @@ class handler(BaseHTTPRequestHandler):
             return
 
         try:
-            transcript = YouTubeTranscriptApi.get_transcript(video_id)
+            ytt_api = YouTubeTranscriptApi(
+                proxy_config=WebshareProxyConfig(
+                    proxy_username="hprytmcu",
+                    proxy_password="7ls2auaubg3x",
+                )
+            )
+            transcript = ytt_api.get_transcript(video_id)
             cues = [
                 {"start": item['start'], "end": item['start'] + item['duration'], "text": item['text']}
                 for item in transcript
