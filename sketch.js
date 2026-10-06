@@ -379,4 +379,104 @@ image(logo, 35, -40, 256, 144);
   fill(videoURL.length > 0 ? 0 : 150);
   textFont("Courier New", 24);
   textAlign(LEFT, CENTER);
-  let displayText =
+  let displayText = videoURL.length > 0 ? videoURL : "Paste a YouTube URL here...";
+  text(displayText, urlBox.x + 30, urlBox.y + urlBox.h / 2);
+
+  if (inputActive && frameCount % 60 < 30) {
+    let cursorX = urlBox.x + 30 + textWidth(videoURL);
+    stroke(0);
+    strokeWeight(2);
+    line(cursorX + 4, urlBox.y + 15, cursorX + 4, urlBox.y + urlBox.h - 15);
+  }
+
+  drawFlagButton(spFlag, spainBox);
+  drawFlagButton(krFlag, koreaBox);
+}
+
+function drawMainScreen() {
+  image(PaperBG, 0, 0, width, height);
+  noStroke();
+  fill(0);
+image(logo, 35, -40, 256, 144);
+  
+  // small flag icons, top-right — reusing your existing rounded-image helper
+  drawFlagButton(spFlag, spainBox2);
+  drawFlagButton(krFlag, koreaBox2);
+
+  // weather bubble — replaces the old plain weather text, same pill style as the title bubble
+  noStroke();
+  fill(255);
+  if (inputActive2) {
+    stroke("#2bfbec");
+    strokeWeight(3);
+  } else {
+    stroke(0);
+    strokeWeight(2);
+  }
+  rect(32, 55, 610, 42, 21);
+  noStroke();
+  fill(newVideoURL.length > 0 ? 0 : 150);
+  textFont("Courier New", 18);
+  textAlign(LEFT, CENTER);
+  let displayText2 = newVideoURL.length > 0 ? newVideoURL : "Paste a new URL...";
+  text(displayText2, urlBox2.x + 20, urlBox2.y + urlBox2.h / 2);
+
+  if (inputActive2 && frameCount % 60 < 30) {
+    let cursorX2 = urlBox2.x + 20 + textWidth(newVideoURL);
+    stroke(0);
+    strokeWeight(2);
+    line(cursorX2 + 4, urlBox2.y + 8, cursorX2 + 4, urlBox2.y + urlBox2.h - 8);
+  }
+
+
+  // divider line under the header
+  stroke(0);
+  strokeWeight(2);
+  line(32, 110, 1242, 110);
+
+  // video title bubble
+  noStroke();
+  fill(255);
+  stroke(0);
+  strokeWeight(0);
+  rect(32, 133, 790, 42, 21);
+  noStroke();
+  fill(0);
+  textFont("Courier New", 22);
+  textAlign(LEFT, CENTER);
+
+  // video box (placeholder rectangle — real video element comes in Weekend 2)
+  fill(20);
+  noStroke();
+  rectMode(CORNER);
+  rect(31, 199, 789, 445, 12);
+
+  // uploader bar
+  fill(255);
+  stroke(0);
+  strokeWeight(0);
+  rect(32, 663, 788, 39, 19);
+  noStroke();
+  fill(0);
+  textFont("Courier New", 18);
+  textAlign(LEFT, CENTER);
+
+  // captions panel (big rounded rect on the right)
+  fill(255);
+  stroke(0);
+  strokeWeight(0);
+  rect(841, 130, 384, 516, 24);
+
+  drawCaptions(841, 130, 384, 516);
+
+   // captions language pill, bottom of the panel
+  fill(255);
+  stroke(0);
+  strokeWeight(0);
+  rect(841, 663, 384, 39, 19);
+  noStroke();
+  fill(0);
+  textFont("Courier New", 15);
+  textAlign(CENTER, CENTER);
+  text("Flip Captions", captionPill.x + captionPill.w / 2, captionPill.y + captionPill.h / 2);
+}
