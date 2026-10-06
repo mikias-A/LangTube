@@ -1,7 +1,4 @@
 {
   "name": "langtube",
-  "version": "1.0.0",
-  "dependencies": {
-    "youtubei.js": "^10.4.0"
-  }
+  "version": "1.0.0"
 }
