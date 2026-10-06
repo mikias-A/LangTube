@@ -30,7 +30,7 @@ export default async function handler(req, res) {
     if (!tracks || tracks.length === 0) {
       return res.status(404).json({
         error: "No captions found for this video.",
-        debug: { hasCaptions: !!data?.captions, topLevelKeys: Object.keys(data || {}) }
+        debug: { hasCaptions: !!data?.captions, actualError: data?.error }
       });
     }
 
