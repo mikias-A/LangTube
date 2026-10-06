@@ -25,10 +25,10 @@ class handler(BaseHTTPRequestHandler):
                     proxy_password="7ls2auaubg3x",
                 )
             )
-            transcript = ytt_api.get_transcript(video_id)
+            transcript = ytt_api.fetch(video_id)
             cues = [
-                {"start": item['start'], "end": item['start'] + item['duration'], "text": item['text']}
-                for item in transcript
+                {"start": snippet.start, "end": snippet.start + snippet.duration, "text": snippet.text}
+                for snippet in transcript
             ]
             self.wfile.write(json.dumps({"cues": cues}).encode())
         except Exception as e:
