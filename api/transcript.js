@@ -6,27 +6,38 @@ export default async function handler(req, res) {
   }
 
   try {
-    const listRes = await fetch(`https://www.youtube.com/api/timedtext?type=list&v=${videoId}`);
-    const listXML = await listRes.text();
-    const langMatch = listXML.match(/lang_code="([^"]+)"/);
+    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      }
+    });
+    const html = await pageRes.text();
 
-    if (!langMatch) {
+    const match = html.match(/"captionTracks":(\[.*?\])/);
+    if (!match) {
       return res.status(404).json({ error: "No captions found for this video." });
     }
 
-    const langCode = langMatch[1];
-    const capRes = await fetch(`https://www.youtube.com/api/timedtext?lang=${langCode}&v=${videoId}`);
+    const tracks = JSON.parse(match[1]);
+    if (!tracks.length) {
+      return res.status(404).json({ error: "No captions found for this video." });
+    }
+
+    const track = tracks.find(t => t.languageCode === "en") || tracks[0];
+    const baseUrl = track.baseUrl.replace(/\\u0026/g, "&");
+
+    const capRes = await fetch(baseUrl);
     const capXML = await capRes.text();
 
     const cues = [];
     const regex = /<text start="([\d.]+)" dur="([\d.]+)"[^>]*>([^<]*)<\/text>/g;
-    let match;
-    while ((match = regex.exec(capXML)) !== null) {
-      const clean = match[3]
+    let m;
+    while ((m = regex.exec(capXML)) !== null) {
+      const clean = m[3]
         .replace(/&#39;/g, "'")
         .replace(/&amp;/g, "&")
         .replace(/&quot;/g, '"');
-      cues.push({ start: parseFloat(match[1]), end: parseFloat(match[1]) + parseFloat(match[2]), text: clean });
+      cues.push({ start: parseFloat(m[1]), end: parseFloat(m[1]) + parseFloat(m[2]), text: clean });
     }
 
     res.status(200).json({ cues });
