@@ -33,6 +33,12 @@ let captionsLoading = false;
 let captionsError = null;
 let scrollOffset = 0;
 
+let targetLang = "es";
+let captionsInTarget = true;
+let currentVideoId = null;
+let captionRequestId = 0;
+const captionPill = { x: 841, y: 663, w: 384, h: 39 };
+
 function extractVideoID(url) {
   let regExp = /(?:youtube\.com.*(?:\?|&)v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
   let match = url.match(regExp);
@@ -49,6 +55,8 @@ window.onYouTubeIframeAPIReady = function () {
 };
 
 function createOrLoadPlayer(videoId) {
+  currentVideoId = videoId;
+  captionsInTarget = true;
   if (!ytPlayer) {
     ytPlayer = new YT.Player("videoPlayer", {
       videoId: videoId,
@@ -58,7 +66,7 @@ function createOrLoadPlayer(videoId) {
   } else {
     ytPlayer.loadVideoById(videoId);
   }
-  fetchTranscript(videoId);
+  fetchTranscript(videoId, targetLang);
 }
 
 function loadYouTubeVideo(url) {
@@ -74,14 +82,16 @@ function loadYouTubeVideo(url) {
   }
 }
 
-async function fetchTranscript(videoId) {
+async function fetchTranscript(videoId, lang) {
+  const myRequest = ++captionRequestId;
   captionCues = [];
   captionsError = null;
   captionsLoading = true;
 
   try {
-    let res = await fetch(`/api/transcript?videoId=${videoId}`);
+    let res = await fetch(`/api/transcript?videoId=${videoId}&lang=${lang}`);
     let data = await res.json();
+    if (myRequest !== captionRequestId) return;
 
     if (data.error) {
       captionsError = data.error;
@@ -90,6 +100,7 @@ async function fetchTranscript(videoId) {
     }
     captionsLoading = false;
   } catch (err) {
+    if (myRequest !== captionRequestId) return;
     console.log("Caption fetch failed:", err);
     captionsError = "Couldn't load captions.";
     captionsLoading = false;
@@ -264,6 +275,16 @@ function mousePressed() {
     if (newVideoURL.trim().length > 0) {
       if (spainHit2) { targetLang = "es"; videoURL = newVideoURL; newVideoURL = ""; loadYouTubeVideo(videoURL); }
       else if (koreaHit2) { targetLang = "ko"; videoURL = newVideoURL; newVideoURL = ""; loadYouTubeVideo(videoURL); }
+    } else if (currentVideoId) {
+      if (spainHit2) { targetLang = "es"; captionsInTarget = true; fetchTranscript(currentVideoId, targetLang); }
+      else if (koreaHit2) { targetLang = "ko"; captionsInTarget = true; fetchTranscript(currentVideoId, targetLang); }
+    }
+
+    let pillHit = mouseX > captionPill.x && mouseX < captionPill.x + captionPill.w &&
+                  mouseY > captionPill.y && mouseY < captionPill.y + captionPill.h;
+    if (pillHit && currentVideoId) {
+      captionsInTarget = !captionsInTarget;
+      fetchTranscript(currentVideoId, captionsInTarget ? targetLang : "en");
     }
   }
 }
@@ -358,103 +379,4 @@ image(logo, 35, -40, 256, 144);
   fill(videoURL.length > 0 ? 0 : 150);
   textFont("Courier New", 24);
   textAlign(LEFT, CENTER);
-  let displayText = videoURL.length > 0 ? videoURL : "Paste a YouTube URL here...";
-  text(displayText, urlBox.x + 30, urlBox.y + urlBox.h / 2);
-
-  if (inputActive && frameCount % 60 < 30) {
-    let cursorX = urlBox.x + 30 + textWidth(videoURL);
-    stroke(0);
-    strokeWeight(2);
-    line(cursorX + 4, urlBox.y + 15, cursorX + 4, urlBox.y + urlBox.h - 15);
-  }
-
-  drawFlagButton(spFlag, spainBox);
-  drawFlagButton(krFlag, koreaBox);
-}
-
-function drawMainScreen() {
-  image(PaperBG, 0, 0, width, height);
-  noStroke();
-  fill(0);
-image(logo, 35, -40, 256, 144);
-  
-  // small flag icons, top-right — reusing your existing rounded-image helper
-  drawFlagButton(spFlag, spainBox2);
-  drawFlagButton(krFlag, koreaBox2);
-
-  // weather bubble — replaces the old plain weather text, same pill style as the title bubble
-  noStroke();
-  fill(255);
-  if (inputActive2) {
-    stroke("#2bfbec");
-    strokeWeight(3);
-  } else {
-    stroke(0);
-    strokeWeight(2);
-  }
-  rect(32, 55, 610, 42, 21);
-  noStroke();
-  fill(newVideoURL.length > 0 ? 0 : 150);
-  textFont("Courier New", 18);
-  textAlign(LEFT, CENTER);
-  let displayText2 = newVideoURL.length > 0 ? newVideoURL : "Paste a new URL...";
-  text(displayText2, urlBox2.x + 20, urlBox2.y + urlBox2.h / 2);
-
-  if (inputActive2 && frameCount % 60 < 30) {
-    let cursorX2 = urlBox2.x + 20 + textWidth(newVideoURL);
-    stroke(0);
-    strokeWeight(2);
-    line(cursorX2 + 4, urlBox2.y + 8, cursorX2 + 4, urlBox2.y + urlBox2.h - 8);
-  }
-
-
-  // divider line under the header
-  stroke(0);
-  strokeWeight(2);
-  line(32, 110, 1242, 110);
-
-  // video title bubble
-  noStroke();
-  fill(255);
-  stroke(0);
-  strokeWeight(0);
-  rect(32, 133, 790, 42, 21);
-  noStroke();
-  fill(0);
-  textFont("Courier New", 22);
-  textAlign(LEFT, CENTER);
-
-  // video box (placeholder rectangle — real video element comes in Weekend 2)
-  fill(20);
-  noStroke();
-  rectMode(CORNER);
-  rect(31, 199, 789, 445, 12);
-
-  // uploader bar
-  fill(255);
-  stroke(0);
-  strokeWeight(0);
-  rect(32, 663, 788, 39, 19);
-  noStroke();
-  fill(0);
-  textFont("Courier New", 18);
-  textAlign(LEFT, CENTER);
-
-  // captions panel (big rounded rect on the right)
-  fill(255);
-  stroke(0);
-  strokeWeight(0);
-  rect(841, 130, 384, 516, 24);
-
-  drawCaptions(841, 130, 384, 516);
-
-   // captions language pill, bottom of the panel
-  fill(255);
-  stroke(0);
-  strokeWeight(0);
-  rect(841, 663, 384, 39, 19);
-  noStroke();
-  fill(0);
-  textFont("Courier New", 15);
-  textAlign(CENTER, CENTER);
-}
+  let displayText =
