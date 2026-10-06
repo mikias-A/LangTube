@@ -1,5 +1,3 @@
-import { Innertube } from "youtubei.js";
-
 export default async function handler(req, res) {
   const { videoId } = req.query;
   res.setHeader("Cache-Control", "no-store");
@@ -9,27 +7,42 @@ export default async function handler(req, res) {
   }
 
   try {
-    const yt = await Innertube.create({ lang: "en", location: "US", retrieve_player: false });
-    const info = await yt.getInfo(videoId);
-    const transcriptData = await info.getTranscript();
+    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      }
+    });
+    const html = await pageRes.text();
 
-    const segments = transcriptData?.transcript?.content?.body?.initial_segments;
-
-    if (!segments || segments.length === 0) {
+    const match = html.match(/"captionTracks":(\[.*?\])/);
+    if (!match) {
       return res.status(404).json({
         error: "No captions found for this video.",
-        debug: { hasTranscriptData: !!transcriptData, keys: transcriptData ? Object.keys(transcriptData) : [] }
+        debug: {
+          htmlLength: html.length,
+          hasCaptionTracksString: html.includes("captionTracks"),
+          hasPlayerResponse: html.includes("ytInitialPlayerResponse")
+        }
       });
     }
 
-    const cues = segments.map(seg => ({
-      start: Number(seg.start_ms) / 1000,
-      end: Number(seg.end_ms) / 1000,
-      text: seg.snippet?.text ?? seg.snippet?.toString?.() ?? ""
-    }));
+    const tracks = JSON.parse(match[1]);
+    const track = tracks.find(t => t.languageCode === "en") || tracks[0];
+    const baseUrl = track.baseUrl.replace(/\\u0026/g, "&");
+
+    const capRes = await fetch(baseUrl);
+    const capXML = await capRes.text();
+
+    const cues = [];
+    const regex = /<text start="([\d.]+)" dur="([\d.]+)"[^>]*>([^<]*)<\/text>/g;
+    let m;
+    while ((m = regex.exec(capXML)) !== null) {
+      const clean = m[3].replace(/&#39;/g, "'").replace(/&amp;/g, "&").replace(/&quot;/g, '"');
+      cues.push({ start: parseFloat(m[1]), end: parseFloat(m[1]) + parseFloat(m[2]), text: clean });
+    }
 
     res.status(200).json({ cues });
   } catch (err) {
-    res.status(500).json({ error: "Couldn't load captions.", debug: err.message });
+    res.status(500).json({ error: "Failed to fetch captions.", debug: err.message });
   }
 }
