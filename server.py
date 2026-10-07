@@ -7,7 +7,9 @@ import argostranslate.translate
 app = Flask(__name__, static_folder=".", static_url_path="")
 
 SUPPORTED_LANGS = ("en", "es", "ko")
-CACHE_FILE = "translation_cache.json"
+CACHE_FILE = "translation_cache_v2.json"
+MAX_CHARS = 70
+PAUSE_GAP = 1.0
 
 original_cache = {}
 
@@ -25,6 +27,30 @@ class TranslateError(Exception):
 def save_cache():
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(translation_cache, f, ensure_ascii=False)
+
+
+def merge_cues(cues):
+    merged = []
+    current = None
+    for c in cues:
+        text = c["text"].strip()
+        if not text:
+            continue
+        if current is None:
+            current = {"start": c["start"], "end": c["end"], "text": text}
+            continue
+        gap = c["start"] - current["end"]
+        too_long = len(current["text"]) + 1 + len(text) > MAX_CHARS
+        sentence_ended = current["text"][-1] in ".?!"
+        if sentence_ended or gap > PAUSE_GAP or too_long:
+            merged.append(current)
+            current = {"start": c["start"], "end": c["end"], "text": text}
+        else:
+            current["text"] += " " + text
+            current["end"] = max(current["end"], c["end"])
+    if current is not None:
+        merged.append(current)
+    return merged
 
 
 def get_original(video_id):
@@ -46,6 +72,8 @@ def get_original(video_id):
         for s in fetched
     ]
     print(f"Got {len(cues)} captions.", flush=True)
+    cues = merge_cues(cues)
+    print(f"Merged into {len(cues)} lines.", flush=True)
     original_cache[video_id] = (cues, t.language_code)
     return original_cache[video_id]
 
