@@ -10,8 +10,10 @@ SUPPORTED_LANGS = ("en", "es", "ko")
 CACHE_FILE = "translation_cache_v2.json"
 MAX_CHARS = 70
 PAUSE_GAP = 1.0
+EDGE_CHARS = ".,!?;:\"'()[]{}¿¡…—–-<>»«“”‘’*"
 
 original_cache = {}
+define_cache = {}
 
 try:
     with open(CACHE_FILE, "r", encoding="utf-8") as f:
@@ -141,6 +143,15 @@ def get_cues(video_id, lang):
     return translation_cache[key]
 
 
+def tidy_meaning(meaning, word):
+    meaning = meaning.strip()
+    if meaning.endswith(".") and not word.endswith("."):
+        meaning = meaning[:-1]
+    if word[:1].islower() and meaning[:1].isupper() and not meaning[:2].isupper():
+        meaning = meaning[:1].lower() + meaning[1:]
+    return meaning
+
+
 @app.route("/")
 def index():
     return send_from_directory(".", "index.html")
@@ -160,6 +171,32 @@ def transcript():
     except Exception as e:
         return jsonify(
             error="Couldn't load captions.",
+            debug=f"{type(e).__name__}: {e}",
+        )
+
+
+@app.route("/api/define")
+def define():
+    raw = request.args.get("word", "")
+    src = request.args.get("from", "en")
+    dst = request.args.get("to", "en")
+    word = raw.strip().strip(EDGE_CHARS).strip()
+    if not word:
+        return jsonify(error="No word there")
+    if src == dst or src not in SUPPORTED_LANGS or dst not in SUPPORTED_LANGS:
+        return jsonify(error="Language not supported")
+    key = f"{src}|{dst}|{word.lower()}"
+    try:
+        if key not in define_cache:
+            ensure_pair(src, dst)
+            result = argostranslate.translate.translate(word, src, dst)
+            define_cache[key] = tidy_meaning(result, word)
+        return jsonify(original=word, meaning=define_cache[key])
+    except TranslateError as e:
+        return jsonify(error=str(e))
+    except Exception as e:
+        return jsonify(
+            error="Couldn't look that up.",
             debug=f"{type(e).__name__}: {e}",
         )
 
