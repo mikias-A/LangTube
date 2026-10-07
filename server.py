@@ -1,4 +1,6 @@
 import json
+import re
+import threading
 from flask import Flask, request, jsonify, send_from_directory
 from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
 import argostranslate.package
@@ -8,27 +10,39 @@ app = Flask(__name__, static_folder=".", static_url_path="")
 
 SUPPORTED_LANGS = ("en", "es", "ko")
 CACHE_FILE = "translation_cache_v2.json"
+ORIGINAL_FILE = "original_cache_v2.json"
+REPAIR_FILE = "pack_repairs.json"
 MAX_CHARS = 70
 PAUSE_GAP = 1.0
 EDGE_CHARS = ".,!?;:\"'()[]{}¿¡…—–-<>»«“”‘’*"
+PRELOAD_PAIRS = [("en", "es"), ("en", "ko"), ("es", "en"), ("ko", "en")]
+TEST_WORDS = {"en": "house", "es": "casa", "ko": "집"}
 
-original_cache = {}
+pack_lock = threading.Lock()
+translators = {}
 define_cache = {}
 
-try:
-    with open(CACHE_FILE, "r", encoding="utf-8") as f:
-        translation_cache = json.load(f)
-except Exception:
-    translation_cache = {}
+
+def load_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+translation_cache = load_json(CACHE_FILE)
+original_disk = load_json(ORIGINAL_FILE)
+repaired = load_json(REPAIR_FILE)
 
 
 class TranslateError(Exception):
     pass
-
-
-def save_cache():
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(translation_cache, f, ensure_ascii=False)
 
 
 def merge_cues(cues):
@@ -56,8 +70,9 @@ def merge_cues(cues):
 
 
 def get_original(video_id):
-    if video_id in original_cache:
-        return original_cache[video_id]
+    if video_id in original_disk:
+        saved = original_disk[video_id]
+        return saved["cues"], saved["lang"]
     print("Fetching captions from YouTube...", flush=True)
     transcript_list = YouTubeTranscriptApi().list(video_id)
     try:
@@ -76,8 +91,18 @@ def get_original(video_id):
     print(f"Got {len(cues)} captions.", flush=True)
     cues = merge_cues(cues)
     print(f"Merged into {len(cues)} lines.", flush=True)
-    original_cache[video_id] = (cues, t.language_code)
-    return original_cache[video_id]
+    original_disk[video_id] = {"cues": cues, "lang": t.language_code}
+    save_json(ORIGINAL_FILE, original_disk)
+    return cues, t.language_code
+
+
+def looks_broken(text):
+    t = text.strip()
+    if not t:
+        return True
+    if re.search(r"(.{3,}?)\1{2,}", t):
+        return True
+    return len(t) > 60
 
 
 def pair_ready(src, dst):
@@ -93,32 +118,88 @@ def install_pair(src, dst):
     for p in argostranslate.package.get_available_packages():
         if p.from_code == src and p.to_code == dst:
             argostranslate.package.install_from_path(p.download())
-            print("Language pack installed.", flush=True)
+            print(f"Language pack {src}-{dst} installed.", flush=True)
             return True
     return False
 
 
 def ensure_pair(src, dst):
-    if pair_ready(src, dst):
-        return
-    if src == "en" or dst == "en":
-        steps = [(src, dst)]
-    else:
-        steps = [(src, "en"), ("en", dst)]
-    for a, b in steps:
-        if not pair_ready(a, b) and not install_pair(a, b):
-            raise TranslateError(f"No {a}-{b} pack")
+    with pack_lock:
+        if pair_ready(src, dst):
+            return
+        if src == "en" or dst == "en":
+            steps = [(src, dst)]
+        else:
+            steps = [(src, "en"), ("en", dst)]
+        for a, b in steps:
+            if not pair_ready(a, b) and not install_pair(a, b):
+                raise TranslateError(f"No {a}-{b} pack")
+
+
+def get_translator(src, dst):
+    key = (src, dst)
+    if key in translators:
+        return translators[key]
+    ensure_pair(src, dst)
+    langs = {l.code: l for l in argostranslate.translate.get_installed_languages()}
+    translation = langs[src].get_translation(langs[dst])
+    if translation is None:
+        raise TranslateError(f"No {src}-{dst} pack")
+    translators[key] = translation
+    return translation
+
+
+def remove_pair(src, dst):
+    for pkg in argostranslate.package.get_installed_packages():
+        if pkg.from_code == src and pkg.to_code == dst:
+            argostranslate.package.uninstall(pkg)
+    translators.pop((src, dst), None)
+
+
+def check_pair(src, dst):
+    try:
+        out = get_translator(src, dst).translate(TEST_WORDS[src])
+    except Exception as e:
+        print(f"Check of {src} -> {dst} failed: {e}", flush=True)
+        return False
+    return not looks_broken(out)
+
+
+def preload():
+    print("Checking language packs (first run downloads them, about 100 MB each)...", flush=True)
+    for src, dst in PRELOAD_PAIRS:
+        try:
+            if check_pair(src, dst):
+                print(f"{src} -> {dst} ready.", flush=True)
+                continue
+            marker = f"{src}-{dst}"
+            if marker in repaired:
+                print(f"{src} -> {dst} still looks broken. Restart the server once.", flush=True)
+                continue
+            print(f"{src} -> {dst} looks broken, reinstalling it...", flush=True)
+            with pack_lock:
+                remove_pair(src, dst)
+                install_pair(src, dst)
+            repaired[marker] = True
+            save_json(REPAIR_FILE, repaired)
+            if check_pair(src, dst):
+                print(f"{src} -> {dst} repaired.", flush=True)
+            else:
+                print(f"{src} -> {dst} still broken. Restart the server once.", flush=True)
+        except Exception as e:
+            print(f"Problem with {src} -> {dst}: {e}", flush=True)
+    print("Language packs ready.", flush=True)
 
 
 def local_translate(texts, src, dst):
     if dst not in SUPPORTED_LANGS:
         raise TranslateError("Language not supported")
-    ensure_pair(src, dst)
+    translator = get_translator(src, dst)
     print(f"Translating {len(texts)} captions into {dst}...", flush=True)
     results = []
     for n, text in enumerate(texts, 1):
         if text.strip():
-            results.append(argostranslate.translate.translate(text, src, dst))
+            results.append(translator.translate(text))
         else:
             results.append(text)
         if n % 50 == 0 or n == len(texts):
@@ -127,19 +208,20 @@ def local_translate(texts, src, dst):
 
 
 def get_cues(video_id, lang):
+    key = f"{video_id}|{lang}"
+    if key in translation_cache:
+        return translation_cache[key]
     cues, original_lang = get_original(video_id)
     src = original_lang.split("-")[0]
     if lang == src:
         return cues
-    key = f"{video_id}|{lang}"
-    if key not in translation_cache:
-        translated = local_translate([c["text"] for c in cues], src, lang)
-        translation_cache[key] = [
-            {"start": c["start"], "end": c["end"], "text": text}
-            for c, text in zip(cues, translated)
-        ]
-        save_cache()
-        print("Translation done and saved.", flush=True)
+    translated = local_translate([c["text"] for c in cues], src, lang)
+    translation_cache[key] = [
+        {"start": c["start"], "end": c["end"], "text": text}
+        for c, text in zip(cues, translated)
+    ]
+    save_json(CACHE_FILE, translation_cache)
+    print("Translation done and saved.", flush=True)
     return translation_cache[key]
 
 
@@ -188,9 +270,11 @@ def define():
     key = f"{src}|{dst}|{word.lower()}"
     try:
         if key not in define_cache:
-            ensure_pair(src, dst)
-            result = argostranslate.translate.translate(word, src, dst)
-            define_cache[key] = tidy_meaning(result, word)
+            result = get_translator(src, dst).translate(word)
+            result = tidy_meaning(result, word)
+            if looks_broken(result):
+                return jsonify(error="No clear meaning")
+            define_cache[key] = result
         return jsonify(original=word, meaning=define_cache[key])
     except TranslateError as e:
         return jsonify(error=str(e))
@@ -202,4 +286,5 @@ def define():
 
 
 if __name__ == "__main__":
+    threading.Thread(target=preload, daemon=True).start()
     app.run(port=8000)
