@@ -1,19 +1,30 @@
-import time
+import json
 from flask import Flask, request, jsonify, send_from_directory
 from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
-from deep_translator import GoogleTranslator
-from deep_translator.exceptions import TooManyRequests
+import argostranslate.package
+import argostranslate.translate
 
 app = Flask(__name__, static_folder=".", static_url_path="")
 
+SUPPORTED_LANGS = ("en", "es", "ko")
+CACHE_FILE = "translation_cache.json"
+
 original_cache = {}
-translation_cache = {}
 
-REQUEST_GAP = 0.4
+try:
+    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+        translation_cache = json.load(f)
+except Exception:
+    translation_cache = {}
 
 
-class RateLimited(Exception):
+class TranslateError(Exception):
     pass
+
+
+def save_cache():
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(translation_cache, f, ensure_ascii=False)
 
 
 def get_original(video_id):
@@ -39,71 +50,66 @@ def get_original(video_id):
     return original_cache[video_id]
 
 
-def make_chunks(texts):
-    chunks = []
-    current = []
-    size = 0
-    for t in texts:
-        t = t[:4000]
-        if current and size + len(t) + 1 > 4000:
-            chunks.append(current)
-            current = []
-            size = 0
-        current.append(t)
-        size += len(t) + 1
-    if current:
-        chunks.append(current)
-    return chunks
+def pair_ready(src, dst):
+    langs = {l.code: l for l in argostranslate.translate.get_installed_languages()}
+    if src not in langs or dst not in langs:
+        return False
+    return langs[src].get_translation(langs[dst]) is not None
 
 
-def translate_text(translator, text):
-    if not text.strip():
-        return text
-    time.sleep(REQUEST_GAP)
-    try:
-        return translator.translate(text) or text
-    except TooManyRequests:
-        raise RateLimited()
-    except Exception:
-        return text
+def install_pair(src, dst):
+    print(f"Downloading {src}-{dst} language pack (first time only)...", flush=True)
+    argostranslate.package.update_package_index()
+    for p in argostranslate.package.get_available_packages():
+        if p.from_code == src and p.to_code == dst:
+            argostranslate.package.install_from_path(p.download())
+            print("Language pack installed.", flush=True)
+            return True
+    return False
 
 
-def translate_chunk(chunk, lang):
-    translator = GoogleTranslator(source="auto", target=lang)
-    time.sleep(REQUEST_GAP)
-    try:
-        parts = (translator.translate("\n".join(chunk)) or "").split("\n")
-        if len(parts) == len(chunk):
-            return parts
-    except TooManyRequests:
-        raise RateLimited()
-    except Exception:
-        pass
-    return [translate_text(translator, t) for t in chunk]
+def ensure_pair(src, dst):
+    if pair_ready(src, dst):
+        return
+    if src == "en" or dst == "en":
+        steps = [(src, dst)]
+    else:
+        steps = [(src, "en"), ("en", dst)]
+    for a, b in steps:
+        if not pair_ready(a, b) and not install_pair(a, b):
+            raise TranslateError(f"No {a}-{b} pack")
 
 
-def translate_texts(texts, lang):
-    chunks = make_chunks(texts)
-    print(f"Translating into {lang} in {len(chunks)} chunks...", flush=True)
+def local_translate(texts, src, dst):
+    if dst not in SUPPORTED_LANGS:
+        raise TranslateError("Language not supported")
+    ensure_pair(src, dst)
+    print(f"Translating {len(texts)} captions into {dst}...", flush=True)
     results = []
-    for n, chunk in enumerate(chunks, 1):
-        results.extend(translate_chunk(chunk, lang))
-        print(f"Translated chunk {n} of {len(chunks)}", flush=True)
-    print("Translation done.", flush=True)
+    for n, text in enumerate(texts, 1):
+        if text.strip():
+            results.append(argostranslate.translate.translate(text, src, dst))
+        else:
+            results.append(text)
+        if n % 50 == 0 or n == len(texts):
+            print(f"Translated {n} of {len(texts)}", flush=True)
     return results
 
 
 def get_cues(video_id, lang):
     cues, original_lang = get_original(video_id)
-    if lang == original_lang or lang.split("-")[0] == original_lang.split("-")[0]:
+    src = original_lang.split("-")[0]
+    if lang == src:
         return cues
-    key = (video_id, lang)
+    key = f"{video_id}|{lang}"
     if key not in translation_cache:
-        translated = translate_texts([c["text"] for c in cues], lang)
+        translated = local_translate([c["text"] for c in cues], src, lang)
         translation_cache[key] = [
             {"start": c["start"], "end": c["end"], "text": text}
             for c, text in zip(cues, translated)
         ]
+        save_cache()
+        print("Translation done and saved.", flush=True)
     return translation_cache[key]
 
 
@@ -120,12 +126,9 @@ def transcript():
         return jsonify(error="Missing videoId")
     try:
         return jsonify(cues=get_cues(video_id, lang))
-    except RateLimited:
-        print("Google is rate-limiting translation requests.", flush=True)
-        return jsonify(
-            error="Translation rate-limited.",
-            debug="Google Translate said too many requests. Wait and try again.",
-        )
+    except TranslateError as e:
+        print(f"Translation problem: {e}", flush=True)
+        return jsonify(error=str(e), debug=str(e))
     except Exception as e:
         return jsonify(
             error="Couldn't load captions.",
