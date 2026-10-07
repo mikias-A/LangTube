@@ -39,6 +39,13 @@ let currentVideoId = null;
 let captionRequestId = 0;
 const captionPill = { x: 841, y: 663, w: 384, h: 39 };
 
+let popup = null;
+let wordBoxes = [];
+let cueLayouts = {};
+const capPanel = { x: 841, y: 130, w: 384, h: 516 };
+const capRowH = 70;
+const capLineH = 20;
+
 function extractVideoID(url) {
   let regExp = /(?:youtube\.com.*(?:\?|&)v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
   let match = url.match(regExp);
@@ -87,6 +94,8 @@ async function fetchTranscript(videoId, lang) {
   captionCues = [];
   captionsError = null;
   captionsLoading = true;
+  popup = null;
+  cueLayouts = {};
 
   try {
     let res = await fetch(`/api/transcript?videoId=${videoId}&lang=${lang}`);
@@ -107,6 +116,27 @@ async function fetchTranscript(videoId, lang) {
   }
 }
 
+async function lookUpWord(p) {
+  const from = captionsInTarget ? targetLang : "en";
+  const to = captionsInTarget ? "en" : targetLang;
+  try {
+    let res = await fetch(`/api/define?word=${encodeURIComponent(p.word)}&from=${from}&to=${to}`);
+    let data = await res.json();
+    if (popup !== p) return;
+    if (data.error) {
+      p.error = data.error;
+    } else {
+      p.original = data.original;
+      p.meaning = data.meaning;
+    }
+    p.loading = false;
+  } catch (err) {
+    if (popup !== p) return;
+    p.error = "Couldn't look that up.";
+    p.loading = false;
+  }
+}
+
 function getActiveCueIndex(currentTime) {
   for (let i = captionCues.length - 1; i >= 0; i--) {
     if (currentTime >= captionCues[i].start) return i;
@@ -114,7 +144,47 @@ function getActiveCueIndex(currentTime) {
   return -1;
 }
 
+function getLayout(i) {
+  if (cueLayouts[i]) return cueLayouts[i];
+  textFont("Courier New", 16);
+  const maxW = capPanel.w - 104;
+  const spaceW = textWidth(" ");
+  let words = String(captionCues[i].text).split(/\s+/).filter(w => w.length > 0);
+  let items = [];
+  let x = 0;
+  let line = 0;
+  for (let w of words) {
+    let ww = textWidth(w);
+    if (x > 0 && x + ww > maxW) {
+      line++;
+      x = 0;
+    }
+    items.push({ text: w, x: x, line: line, w: ww });
+    x += ww + spaceW;
+  }
+  cueLayouts[i] = { items: items, lines: line + 1 };
+  return cueLayouts[i];
+}
+
+function wrapText(str, maxW) {
+  let words = str.split(" ");
+  let lines = [];
+  let cur = "";
+  for (let w of words) {
+    let test = cur === "" ? w : cur + " " + w;
+    if (cur !== "" && textWidth(test) > maxW) {
+      lines.push(cur);
+      cur = w;
+    } else {
+      cur = test;
+    }
+  }
+  if (cur !== "") lines.push(cur);
+  return lines;
+}
+
 function drawCaptions(panelX, panelY, panelW, panelH) {
+  wordBoxes = [];
   drawingContext.save();
   drawingContext.beginPath();
   drawingContext.rect(panelX, panelY, panelW, panelH);
@@ -155,11 +225,156 @@ function drawCaptions(panelX, panelY, panelW, panelH) {
       fill(0);
       let timeLabel = formatTime(captionCues[i].start);
       text(timeLabel, panelX + 24, y);
-      text(captionCues[i].text, panelX + 80, y, panelW - 104);
+
+      let layout = getLayout(i);
+      let textLeft = panelX + 80;
+      for (let k = 0; k < layout.items.length; k++) {
+        let it = layout.items[k];
+        let wx = textLeft + it.x;
+        let wy = y + it.line * capLineH;
+        if (popup && popup.cueIndex === i && popup.wordIndex === k) {
+          noStroke();
+          fill(43, 251, 236, 170);
+          rect(wx - 3, wy - 1, it.w + 6, capLineH, 5);
+          fill(0);
+        }
+        text(it.text, wx, wy);
+        wordBoxes.push({
+          x: wx,
+          y: wy,
+          w: it.w,
+          cueIndex: i,
+          wordIndex: k,
+          text: it.text,
+          relX: it.x,
+          relY: it.line * capLineH,
+        });
+      }
     }
   }
 
   drawingContext.restore();
+}
+
+function drawPopup() {
+  if (!popup || captionCues.length === 0) return;
+
+  if (ytPlayer && ytPlayer.getPlayerState && ytPlayer.getPlayerState() === 1 &&
+      millis() - popup.openedAt > 800) {
+    popup = null;
+    return;
+  }
+
+  let rowY = capPanel.y + 40 + popup.cueIndex * capRowH - scrollOffset;
+  let wordTop = rowY + popup.relY;
+  let wordBottom = wordTop + capLineH;
+  if (wordBottom < capPanel.y || wordTop > capPanel.y + capPanel.h) {
+    popup = null;
+    return;
+  }
+  let wordCx = capPanel.x + 80 + popup.relX + popup.w / 2;
+
+  let head = popup.original || popup.word;
+  let body;
+  let bodyColor;
+  if (popup.loading) {
+    body = "Looking up...";
+    bodyColor = 120;
+  } else if (popup.error) {
+    body = popup.error;
+    bodyColor = 120;
+  } else {
+    body = popup.meaning || "(no result)";
+    bodyColor = 0;
+  }
+
+  push();
+  rectMode(CORNER);
+  textAlign(LEFT, TOP);
+  textFont("Courier New", 18);
+  textStyle(BOLD);
+  let headW = textWidth(head);
+  textStyle(NORMAL);
+  textFont("Courier New", 16);
+  let bodyLines = wrapText(body, 260);
+  let widest = headW;
+  for (let l of bodyLines) widest = max(widest, textWidth(l));
+  let boxW = constrain(widest + 32, 140, 300);
+  let boxH = 12 + 24 + bodyLines.length * capLineH + 12;
+
+  let boxX = constrain(wordCx - boxW / 2, capPanel.x + 8, capPanel.x + capPanel.w - 8 - boxW);
+  let below = wordBottom + 12 + boxH <= capPanel.y + capPanel.h;
+  let boxY = below ? wordBottom + 12 : wordTop - 12 - boxH;
+
+  let tipY = below ? wordBottom + 2 : wordTop - 2;
+  let baseY = below ? boxY + 2 : boxY + boxH - 2;
+  let baseX = constrain(wordCx, boxX + 20, boxX + boxW - 20);
+  noStroke();
+  fill("#2bfbec");
+  triangle(wordCx, tipY, baseX - 9, baseY, baseX + 9, baseY);
+
+  fill(255);
+  stroke("#2bfbec");
+  strokeWeight(3);
+  rect(boxX, boxY, boxW, boxH, 16);
+
+  noStroke();
+  fill(0);
+  textFont("Courier New", 18);
+  textStyle(BOLD);
+  text(head, boxX + 16, boxY + 12);
+  textStyle(NORMAL);
+  textFont("Courier New", 16);
+  fill(bodyColor);
+  for (let n = 0; n < bodyLines.length; n++) {
+    text(bodyLines[n], boxX + 16, boxY + 12 + 24 + n * capLineH);
+  }
+  pop();
+
+  popup.rect = { x: boxX, y: boxY, w: boxW, h: boxH };
+}
+
+function handleCaptionClick() {
+  if (popup && popup.rect &&
+      mouseX > popup.rect.x && mouseX < popup.rect.x + popup.rect.w &&
+      mouseY > popup.rect.y && mouseY < popup.rect.y + popup.rect.h) {
+    return;
+  }
+
+  let hit = null;
+  if (mouseX > capPanel.x && mouseX < capPanel.x + capPanel.w &&
+      mouseY > capPanel.y && mouseY < capPanel.y + capPanel.h) {
+    for (let b of wordBoxes) {
+      if (mouseX >= b.x - 3 && mouseX <= b.x + b.w + 3 &&
+          mouseY >= b.y && mouseY <= b.y + capLineH) {
+        hit = b;
+        break;
+      }
+    }
+  }
+
+  if (!hit) {
+    popup = null;
+    return;
+  }
+
+  if (ytPlayer && ytPlayer.pauseVideo) ytPlayer.pauseVideo();
+
+  popup = {
+    cueIndex: hit.cueIndex,
+    wordIndex: hit.wordIndex,
+    word: hit.text,
+    relX: hit.relX,
+    relY: hit.relY,
+    w: hit.w,
+    original: null,
+    meaning: null,
+    error: null,
+    loading: true,
+    openedAt: millis(),
+    rect: null,
+  };
+  lookUpWord(popup);
 }
 
 function formatTime(seconds) {
@@ -286,6 +501,8 @@ function mousePressed() {
       captionsInTarget = !captionsInTarget;
       fetchTranscript(currentVideoId, captionsInTarget ? targetLang : "en");
     }
+
+    handleCaptionClick();
   }
 }
 
@@ -479,4 +696,6 @@ image(logo, 35, -40, 256, 144);
   textFont("Courier New", 15);
   textAlign(CENTER, CENTER);
   text("Flip Captions", captionPill.x + captionPill.w / 2, captionPill.y + captionPill.h / 2);
+
+  drawPopup();
 }
