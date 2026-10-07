@@ -148,7 +148,8 @@ function getLayout(i) {
   if (cueLayouts[i]) return cueLayouts[i];
   textFont("Courier New", 16);
   const maxW = capPanel.w - 104;
-  const spaceW = textWidth(" ");
+  let spaceW = textWidth("a a") - textWidth("aa");
+  if (!(spaceW > 1)) spaceW = 9.6;
   let words = String(captionCues[i].text).split(/\s+/).filter(w => w.length > 0);
   let items = [];
   let x = 0;
