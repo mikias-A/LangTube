@@ -12,7 +12,7 @@ app = Flask(__name__, static_folder=".", static_url_path="")
 SUPPORTED_LANGS = ("en", "es", "ko")
 CACHE_FILE = "translation_cache_v3.json"
 ORIGINAL_FILE = "original_cache_v2.json"
-REPAIR_FILE = "pack_repairs_v2.json"
+REPAIR_FILE = "pack_repairs_v3.json"
 MAX_CHARS = 70
 PAUSE_GAP = 1.0
 SENTENCE_MAX = 240
@@ -25,6 +25,7 @@ PREFIX_RE = re.compile(r"^\s*(word|palabra|단어)s?\s*[:：]?\s*", re.IGNORECAS
 pack_lock = threading.Lock()
 translators = {}
 define_cache = {}
+broken_pairs = set()
 
 
 def load_json(path):
@@ -100,11 +101,15 @@ def get_original(video_id):
     return cues, t.language_code
 
 
+def is_garbage(text):
+    return bool(re.search(r"(.{3,}?)\1{2,}", text.strip()))
+
+
 def looks_broken(text):
     t = text.strip()
     if not t:
         return True
-    if re.search(r"(.{3,}?)\1{2,}", t):
+    if is_garbage(t):
         return True
     return len(t) > 60
 
@@ -132,21 +137,25 @@ def clear_cached_download(pkg):
         print(f"Couldn't delete saved download: {e}", flush=True)
 
 
-def install_pair(src, dst, fresh=False):
-    print(f"Downloading {src}-{dst} language pack...", flush=True)
+def available_matches(src, dst):
     argostranslate.package.update_package_index()
-    matches = [
-        p
-        for p in argostranslate.package.get_available_packages()
-        if p.from_code == src and p.to_code == dst
-    ]
+    return sorted(
+        [
+            p
+            for p in argostranslate.package.get_available_packages()
+            if p.from_code == src and p.to_code == dst
+        ],
+        key=version_key,
+        reverse=True,
+    )
+
+
+def install_pair(src, dst):
+    print(f"Downloading {src}-{dst} language pack...", flush=True)
+    matches = available_matches(src, dst)
     if not matches:
         return False
-    best = max(matches, key=version_key)
-    print(f"Using {src}-{dst} pack version {getattr(best, 'package_version', '?')}", flush=True)
-    if fresh:
-        for p in matches:
-            clear_cached_download(p)
+    best = matches[0]
     argostranslate.package.install_from_path(best.download())
     print(f"Language pack {src}-{dst} installed.", flush=True)
     return True
@@ -195,27 +204,43 @@ def check_pair(src, dst):
     return not looks_broken(out)
 
 
+def try_versions(src, dst):
+    matches = available_matches(src, dst)
+    for p in matches:
+        ver = getattr(p, "package_version", "?")
+        print(f"Trying {src}-{dst} pack version {ver} from a fresh download...", flush=True)
+        with pack_lock:
+            remove_pair(src, dst)
+            clear_cached_download(p)
+            argostranslate.package.install_from_path(p.download())
+        if check_pair(src, dst):
+            return True
+    return False
+
+
 def preload():
     print("Checking language packs (first run downloads them, about 100 MB each)...", flush=True)
     for src, dst in PRELOAD_PAIRS:
         try:
             if check_pair(src, dst):
+                broken_pairs.discard((src, dst))
                 print(f"{src} -> {dst} ready.", flush=True)
                 continue
             marker = f"{src}-{dst}"
             if marker in repaired:
-                print(f"{src} -> {dst} still looks broken. Restart the server once.", flush=True)
+                broken_pairs.add((src, dst))
+                print(f"{src} -> {dst} still looks broken (already tried repairing it).", flush=True)
                 continue
-            print(f"{src} -> {dst} looks broken, reinstalling it from a fresh download...", flush=True)
-            with pack_lock:
-                remove_pair(src, dst)
-                install_pair(src, dst, fresh=True)
+            print(f"{src} -> {dst} looks broken, trying every available version...", flush=True)
+            ok = try_versions(src, dst)
             repaired[marker] = True
             save_json(REPAIR_FILE, repaired)
-            if check_pair(src, dst):
+            if ok:
+                broken_pairs.discard((src, dst))
                 print(f"{src} -> {dst} repaired.", flush=True)
             else:
-                print(f"{src} -> {dst} still broken. Restart the server once.", flush=True)
+                broken_pairs.add((src, dst))
+                print(f"{src} -> {dst} still broken. Restart the server once to be sure.", flush=True)
         except Exception as e:
             print(f"Problem with {src} -> {dst}: {e}", flush=True)
     print("Language packs ready.", flush=True)
@@ -312,6 +337,8 @@ def tidy_meaning(meaning, word):
 
 
 def gloss(src, dst, word):
+    if (src, dst) in broken_pairs:
+        return None
     translator = get_translator(src, dst)
     lower = word.lower()
     tries = []
@@ -329,12 +356,24 @@ def gloss(src, dst, word):
             out = PREFIX_RE.sub("", out)
         out = out.strip().strip(EDGE_CHARS).strip()
         print(f"define {src}->{dst} [{name}] {text!r} -> {out[:60]!r}", flush=True)
+        if is_garbage(out):
+            broken_pairs.add((src, dst))
+            print(f"{src}->{dst} gives garbage, skipping word lookups for it.", flush=True)
+            return None
         if not out or looks_broken(out):
             continue
         if out.lower() == lower:
             continue
         return tidy_meaning(out, word)
     return None
+
+
+def original_line(video_id, cue):
+    try:
+        cues, _ = get_original(video_id)
+        return clean_for_translation(cues[int(cue)]["text"])
+    except Exception:
+        return ""
 
 
 @app.route("/")
@@ -365,6 +404,8 @@ def define():
     raw = request.args.get("word", "")
     src = request.args.get("from", "en")
     dst = request.args.get("to", "en")
+    video_id = request.args.get("videoId", "")
+    cue = request.args.get("cue", "")
     word = raw.strip().strip(EDGE_CHARS).strip()
     if not word:
         return jsonify(error="No word there")
@@ -372,12 +413,16 @@ def define():
         return jsonify(error="Language not supported")
     key = f"{src}|{dst}|{word.lower()}"
     try:
-        if key not in define_cache:
+        meaning = define_cache.get(key, "")
+        if not meaning:
             result = gloss(src, dst, word)
-            if not result:
-                return jsonify(error="No clear meaning")
-            define_cache[key] = result
-        return jsonify(original=word, meaning=define_cache[key])
+            if result:
+                define_cache[key] = result
+                meaning = result
+        line = original_line(video_id, cue) if video_id and cue != "" else ""
+        if not meaning and not line:
+            return jsonify(error="No clear meaning")
+        return jsonify(original=word, meaning=meaning, line=line)
     except TranslateError as e:
         return jsonify(error=str(e))
     except Exception as e:
