@@ -9,14 +9,17 @@ import argostranslate.translate
 app = Flask(__name__, static_folder=".", static_url_path="")
 
 SUPPORTED_LANGS = ("en", "es", "ko")
-CACHE_FILE = "translation_cache_v2.json"
+CACHE_FILE = "translation_cache_v3.json"
 ORIGINAL_FILE = "original_cache_v2.json"
 REPAIR_FILE = "pack_repairs.json"
 MAX_CHARS = 70
 PAUSE_GAP = 1.0
+SENTENCE_MAX = 240
 EDGE_CHARS = ".,!?;:\"'()[]{}¿¡…—–-<>»«“”‘’*"
 PRELOAD_PAIRS = [("en", "es"), ("en", "ko"), ("es", "en"), ("ko", "en")]
 TEST_WORDS = {"en": "house", "es": "casa", "ko": "집"}
+FRAMES = {"en": "Word: {}", "es": "Palabra: {}", "ko": "단어: {}"}
+PREFIX_RE = re.compile(r"^\s*(word|palabra|단어)s?\s*[:：]?\s*", re.IGNORECASE)
 
 pack_lock = threading.Lock()
 translators = {}
@@ -162,6 +165,7 @@ def check_pair(src, dst):
     except Exception as e:
         print(f"Check of {src} -> {dst} failed: {e}", flush=True)
         return False
+    print(f"Check {src} -> {dst}: {TEST_WORDS[src]!r} -> {out!r}", flush=True)
     return not looks_broken(out)
 
 
@@ -191,20 +195,67 @@ def preload():
     print("Language packs ready.", flush=True)
 
 
-def local_translate(texts, src, dst):
+def clean_for_translation(text):
+    text = re.sub(r">>+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def group_sentences(cues):
+    groups = []
+    current = []
+    chars = 0
+    for i, c in enumerate(cues):
+        if current:
+            prev = cues[current[-1]]
+            gap = c["start"] - prev["end"]
+            ended = prev["text"].rstrip()[-1:] in (".", "?", "!")
+            if ended or gap > PAUSE_GAP or chars + len(c["text"]) > SENTENCE_MAX:
+                groups.append(current)
+                current = []
+                chars = 0
+        current.append(i)
+        chars += len(c["text"]) + 1
+    if current:
+        groups.append(current)
+    return groups
+
+
+def spread(translated, texts):
+    n = len(texts)
+    if n == 1:
+        return [translated.strip()]
+    words = translated.split()
+    total = sum(max(len(t), 1) for t in texts)
+    parts = []
+    used = 0
+    running = 0
+    for k, t in enumerate(texts):
+        running += max(len(t), 1)
+        if k == n - 1:
+            end = len(words)
+        else:
+            end = round(len(words) * running / total)
+        parts.append(" ".join(words[used:end]))
+        used = end
+    return parts
+
+
+def translate_cues(cues, src, dst):
     if dst not in SUPPORTED_LANGS:
         raise TranslateError("Language not supported")
     translator = get_translator(src, dst)
-    print(f"Translating {len(texts)} captions into {dst}...", flush=True)
-    results = []
-    for n, text in enumerate(texts, 1):
-        if text.strip():
-            results.append(translator.translate(text))
-        else:
-            results.append(text)
-        if n % 50 == 0 or n == len(texts):
-            print(f"Translated {n} of {len(texts)}", flush=True)
-    return results
+    groups = group_sentences(cues)
+    print(f"Translating {len(cues)} lines as {len(groups)} sentences into {dst}...", flush=True)
+    out = [""] * len(cues)
+    for n, idxs in enumerate(groups, 1):
+        texts = [cues[i]["text"] for i in idxs]
+        sentence = clean_for_translation(" ".join(texts))
+        translated = translator.translate(sentence) if sentence else ""
+        for i, part in zip(idxs, spread(translated, texts)):
+            out[i] = part
+        if n % 25 == 0 or n == len(groups):
+            print(f"Translated {n} of {len(groups)} sentences", flush=True)
+    return out
 
 
 def get_cues(video_id, lang):
@@ -215,7 +266,7 @@ def get_cues(video_id, lang):
     src = original_lang.split("-")[0]
     if lang == src:
         return cues
-    translated = local_translate([c["text"] for c in cues], src, lang)
+    translated = translate_cues(cues, src, lang)
     translation_cache[key] = [
         {"start": c["start"], "end": c["end"], "text": text}
         for c, text in zip(cues, translated)
@@ -232,6 +283,30 @@ def tidy_meaning(meaning, word):
     if word[:1].islower() and meaning[:1].isupper() and not meaning[:2].isupper():
         meaning = meaning[:1].lower() + meaning[1:]
     return meaning
+
+
+def gloss(src, dst, word):
+    translator = get_translator(src, dst)
+    lower = word.lower()
+    tries = [("frame", FRAMES[src].format(word))]
+    if lower != word:
+        tries.append(("frame-lower", FRAMES[src].format(lower)))
+    tries.append(("period", word + "."))
+    if lower != word:
+        tries.append(("plain-lower", lower))
+    tries.append(("plain", word))
+    for name, text in tries:
+        out = translator.translate(text).strip()
+        if name.startswith("frame"):
+            out = PREFIX_RE.sub("", out)
+        out = out.strip().strip(EDGE_CHARS).strip()
+        print(f"define {src}->{dst} [{name}] {text!r} -> {out!r}", flush=True)
+        if not out or looks_broken(out):
+            continue
+        if out.lower() == lower:
+            continue
+        return tidy_meaning(out, word)
+    return None
 
 
 @app.route("/")
@@ -270,9 +345,8 @@ def define():
     key = f"{src}|{dst}|{word.lower()}"
     try:
         if key not in define_cache:
-            result = get_translator(src, dst).translate(word)
-            result = tidy_meaning(result, word)
-            if looks_broken(result):
+            result = gloss(src, dst, word)
+            if not result:
                 return jsonify(error="No clear meaning")
             define_cache[key] = result
         return jsonify(original=word, meaning=define_cache[key])
