@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import threading
 from flask import Flask, request, jsonify, send_from_directory
@@ -19,10 +20,15 @@ SENTENCE_MAX = 240
 EDGE_CHARS = ".,!?;:\"'()[]{}¿¡…—–-<>»«“”‘’*"
 PRELOAD_PAIRS = [("en", "es"), ("en", "ko"), ("es", "en"), ("ko", "en")]
 TEST_WORDS = {"en": "house", "es": "casa", "ko": "집"}
-FRAMES = {"en": "Word: {}", "es": "Palabra: {}"}
+FRAMES = {"en": "Word: {}"}
 PREFIX_RE = re.compile(r"^\s*(word|palabra|단어)s?\s*[:：]?\s*", re.IGNORECASE)
 
+MARIAN_REPO = "michaelfeil/ct2fast-opus-mt-es-en"
+MARIAN_DIR = os.path.join("models", "opus-mt-es-en")
+
 pack_lock = threading.Lock()
+marian_lock = threading.Lock()
+marian_model = None
 translators = {}
 define_cache = {}
 broken_pairs = set()
@@ -48,6 +54,50 @@ repaired = load_json(REPAIR_FILE)
 
 class TranslateError(Exception):
     pass
+
+
+class MarianTranslation:
+    def __init__(self, folder):
+        import ctranslate2
+        import sentencepiece
+
+        self.translator = ctranslate2.Translator(
+            folder, device="cpu", compute_type="float32"
+        )
+        self.sp_src = sentencepiece.SentencePieceProcessor(
+            os.path.join(folder, "source.spm")
+        )
+        self.sp_tgt = sentencepiece.SentencePieceProcessor(
+            os.path.join(folder, "target.spm")
+        )
+
+    def translate(self, text):
+        tokens = self.sp_src.encode(text, out_type=str) + ["</s>"]
+        results = self.translator.translate_batch(
+            [tokens], beam_size=4, max_decoding_length=256
+        )
+        return self.sp_tgt.decode_pieces(results[0].hypotheses[0])
+
+
+def get_marian():
+    global marian_model
+    with marian_lock:
+        if marian_model is not None:
+            return marian_model
+        if not os.path.exists(os.path.join(MARIAN_DIR, "model.bin")):
+            print(
+                "Downloading the Spanish -> English model (first time only, may take a few minutes)...",
+                flush=True,
+            )
+            try:
+                from huggingface_hub import snapshot_download
+
+                snapshot_download(repo_id=MARIAN_REPO, local_dir=MARIAN_DIR)
+            except Exception as e:
+                print(f"Download problem: {e}", flush=True)
+                raise TranslateError("Spanish model missing")
+        marian_model = MarianTranslation(MARIAN_DIR)
+        return marian_model
 
 
 def merge_cues(cues):
@@ -178,6 +228,9 @@ def get_translator(src, dst):
     key = (src, dst)
     if key in translators:
         return translators[key]
+    if key == ("es", "en"):
+        translators[key] = get_marian()
+        return translators[key]
     ensure_pair(src, dst)
     langs = {l.code: l for l in argostranslate.translate.get_installed_languages()}
     translation = langs[src].get_translation(langs[dst])
@@ -225,6 +278,13 @@ def preload():
             if check_pair(src, dst):
                 broken_pairs.discard((src, dst))
                 print(f"{src} -> {dst} ready.", flush=True)
+                continue
+            if (src, dst) == ("es", "en"):
+                broken_pairs.add((src, dst))
+                print(
+                    "es -> en model isn't working. Spanish word meanings will fall back to the English caption line.",
+                    flush=True,
+                )
                 continue
             marker = f"{src}-{dst}"
             if marker in repaired:
