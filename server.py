@@ -4,6 +4,7 @@ import threading
 from flask import Flask, request, jsonify, send_from_directory
 from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
 import argostranslate.package
+import argostranslate.settings
 import argostranslate.translate
 
 app = Flask(__name__, static_folder=".", static_url_path="")
@@ -11,14 +12,14 @@ app = Flask(__name__, static_folder=".", static_url_path="")
 SUPPORTED_LANGS = ("en", "es", "ko")
 CACHE_FILE = "translation_cache_v3.json"
 ORIGINAL_FILE = "original_cache_v2.json"
-REPAIR_FILE = "pack_repairs.json"
+REPAIR_FILE = "pack_repairs_v2.json"
 MAX_CHARS = 70
 PAUSE_GAP = 1.0
 SENTENCE_MAX = 240
 EDGE_CHARS = ".,!?;:\"'()[]{}¿¡…—–-<>»«“”‘’*"
 PRELOAD_PAIRS = [("en", "es"), ("en", "ko"), ("es", "en"), ("ko", "en")]
 TEST_WORDS = {"en": "house", "es": "casa", "ko": "집"}
-FRAMES = {"en": "Word: {}", "es": "Palabra: {}", "ko": "단어: {}"}
+FRAMES = {"en": "Word: {}", "es": "Palabra: {}"}
 PREFIX_RE = re.compile(r"^\s*(word|palabra|단어)s?\s*[:：]?\s*", re.IGNORECASE)
 
 pack_lock = threading.Lock()
@@ -115,15 +116,40 @@ def pair_ready(src, dst):
     return langs[src].get_translation(langs[dst]) is not None
 
 
-def install_pair(src, dst):
-    print(f"Downloading {src}-{dst} language pack (first time only)...", flush=True)
+def version_key(pkg):
+    v = str(getattr(pkg, "package_version", "0"))
+    return [int(x) for x in re.findall(r"\d+", v)] or [0]
+
+
+def clear_cached_download(pkg):
+    try:
+        name = argostranslate.package.argospm_package_name(pkg) + ".argosmodel"
+        path = argostranslate.settings.downloads_dir / name
+        if path.exists():
+            path.unlink()
+            print(f"Deleted saved download {name}", flush=True)
+    except Exception as e:
+        print(f"Couldn't delete saved download: {e}", flush=True)
+
+
+def install_pair(src, dst, fresh=False):
+    print(f"Downloading {src}-{dst} language pack...", flush=True)
     argostranslate.package.update_package_index()
-    for p in argostranslate.package.get_available_packages():
-        if p.from_code == src and p.to_code == dst:
-            argostranslate.package.install_from_path(p.download())
-            print(f"Language pack {src}-{dst} installed.", flush=True)
-            return True
-    return False
+    matches = [
+        p
+        for p in argostranslate.package.get_available_packages()
+        if p.from_code == src and p.to_code == dst
+    ]
+    if not matches:
+        return False
+    best = max(matches, key=version_key)
+    print(f"Using {src}-{dst} pack version {getattr(best, 'package_version', '?')}", flush=True)
+    if fresh:
+        for p in matches:
+            clear_cached_download(p)
+    argostranslate.package.install_from_path(best.download())
+    print(f"Language pack {src}-{dst} installed.", flush=True)
+    return True
 
 
 def ensure_pair(src, dst):
@@ -165,7 +191,7 @@ def check_pair(src, dst):
     except Exception as e:
         print(f"Check of {src} -> {dst} failed: {e}", flush=True)
         return False
-    print(f"Check {src} -> {dst}: {TEST_WORDS[src]!r} -> {out!r}", flush=True)
+    print(f"Check {src} -> {dst}: {TEST_WORDS[src]!r} -> {out[:60]!r}", flush=True)
     return not looks_broken(out)
 
 
@@ -180,10 +206,10 @@ def preload():
             if marker in repaired:
                 print(f"{src} -> {dst} still looks broken. Restart the server once.", flush=True)
                 continue
-            print(f"{src} -> {dst} looks broken, reinstalling it...", flush=True)
+            print(f"{src} -> {dst} looks broken, reinstalling it from a fresh download...", flush=True)
             with pack_lock:
                 remove_pair(src, dst)
-                install_pair(src, dst)
+                install_pair(src, dst, fresh=True)
             repaired[marker] = True
             save_json(REPAIR_FILE, repaired)
             if check_pair(src, dst):
@@ -288,9 +314,11 @@ def tidy_meaning(meaning, word):
 def gloss(src, dst, word):
     translator = get_translator(src, dst)
     lower = word.lower()
-    tries = [("frame", FRAMES[src].format(word))]
-    if lower != word:
-        tries.append(("frame-lower", FRAMES[src].format(lower)))
+    tries = []
+    if src in FRAMES:
+        tries.append(("frame", FRAMES[src].format(word)))
+        if lower != word:
+            tries.append(("frame-lower", FRAMES[src].format(lower)))
     tries.append(("period", word + "."))
     if lower != word:
         tries.append(("plain-lower", lower))
@@ -300,7 +328,7 @@ def gloss(src, dst, word):
         if name.startswith("frame"):
             out = PREFIX_RE.sub("", out)
         out = out.strip().strip(EDGE_CHARS).strip()
-        print(f"define {src}->{dst} [{name}] {text!r} -> {out!r}", flush=True)
+        print(f"define {src}->{dst} [{name}] {text!r} -> {out[:60]!r}", flush=True)
         if not out or looks_broken(out):
             continue
         if out.lower() == lower:
