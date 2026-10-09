@@ -1,7 +1,9 @@
+import csv
 import json
 import os
 import re
 import threading
+import requests
 from flask import Flask, request, jsonify, send_from_directory
 from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
 import argostranslate.package
@@ -22,9 +24,13 @@ PRELOAD_PAIRS = [("en", "es"), ("en", "ko"), ("es", "en"), ("ko", "en")]
 TEST_WORDS = {"en": "house", "es": "casa", "ko": "집"}
 FRAMES = {"en": "Word: {}"}
 PREFIX_RE = re.compile(r"^\s*(word|palabra|단어)s?\s*[:：]?\s*", re.IGNORECASE)
+BAD_GLOSSES = {"about us", "tag"}
 
 MARIAN_REPO = "michaelfeil/ct2fast-opus-mt-es-en"
 MARIAN_DIR = os.path.join("models", "opus-mt-es-en")
+
+KENGDIC_URL = "https://raw.githubusercontent.com/garfieldnate/kengdic/master/kengdic.tsv"
+KENGDIC_FILE = os.path.join("data", "kengdic.tsv")
 
 NOUN_TAGS = {"NNG", "NNP", "NNB", "NR", "NP"}
 PARTICLES = {
@@ -80,8 +86,11 @@ ENDINGS = {
 pack_lock = threading.Lock()
 marian_lock = threading.Lock()
 kiwi_lock = threading.Lock()
+kdict_lock = threading.Lock()
 marian_model = None
 kiwi_obj = None
+kdict = None
+kdict_failed = False
 translators = {}
 define_cache = {}
 broken_pairs = set()
@@ -161,6 +170,74 @@ def get_kiwi():
 
             kiwi_obj = Kiwi()
         return kiwi_obj
+
+
+def load_kengdic():
+    global kdict, kdict_failed
+    with kdict_lock:
+        if kdict is not None:
+            return kdict
+        if kdict_failed:
+            raise RuntimeError("dictionary unavailable")
+        try:
+            if not os.path.exists(KENGDIC_FILE):
+                print("Downloading the Korean dictionary (first time only)...", flush=True)
+                os.makedirs("data", exist_ok=True)
+                res = requests.get(KENGDIC_URL, timeout=120)
+                res.raise_for_status()
+                with open(KENGDIC_FILE, "wb") as f:
+                    f.write(res.content)
+            with open(KENGDIC_FILE, "r", encoding="utf-8", errors="replace", newline="") as f:
+                rows = list(csv.reader(f, delimiter="\t", quoting=csv.QUOTE_NONE))
+            if not rows:
+                raise RuntimeError("dictionary file is empty")
+            names = [h.strip().lower() for h in rows[0]]
+            if "surface" in names and "gloss" in names:
+                si = names.index("surface")
+                gi = names.index("gloss")
+                data = rows[1:]
+            else:
+                si, gi = 1, 3
+                data = rows
+            entries = {}
+            for row in data:
+                if len(row) <= max(si, gi):
+                    continue
+                surface = row[si].strip()
+                gloss_text = row[gi].strip()
+                if not surface or not gloss_text or gloss_text.lower() in ("null", "none"):
+                    continue
+                entries.setdefault(surface, []).append(gloss_text)
+            if not entries:
+                raise RuntimeError("no entries could be read")
+            kdict = entries
+            return kdict
+        except Exception:
+            kdict_failed = True
+            raise
+
+
+def dict_meaning(candidates):
+    entries = load_kengdic()
+    for cand in candidates:
+        glosses = entries.get(cand)
+        if not glosses:
+            continue
+        senses = []
+        seen = set()
+        for g in glosses:
+            for part in g.split(";"):
+                part = part.strip()
+                if not part or len(part) > 40 or part.lower() in seen:
+                    continue
+                seen.add(part.lower())
+                senses.append(part)
+            if len(senses) >= 4:
+                break
+        if senses:
+            print(f"dictionary hit for {cand!r}: {senses[:4]}", flush=True)
+            return "; ".join(senses[:4])
+    return None
 
 
 def merge_cues(cues):
@@ -374,6 +451,14 @@ def preload():
             f"Korean word splitter not available ({type(e).__name__}). Install it with: python -m pip install kiwipiepy",
             flush=True,
         )
+    try:
+        n = len(load_kengdic())
+        print(f"Korean dictionary ready ({n} entries).", flush=True)
+    except Exception as e:
+        print(
+            f"Korean dictionary not available ({type(e).__name__}: {e}). Word meanings will use the translator instead.",
+            flush=True,
+        )
     print("Language packs ready.", flush=True)
 
 
@@ -495,6 +580,8 @@ def gloss(src, dst, word):
             continue
         if out.lower() == lower:
             continue
+        if src == "ko" and out.lower() in BAD_GLOSSES:
+            continue
         return tidy_meaning(out, word, src == "ko")
     return None
 
@@ -546,16 +633,29 @@ def korean_meaning(word):
         info = analyze_korean(word)
     except Exception as e:
         print(f"Korean analysis unavailable: {type(e).__name__}", flush=True)
-        return gloss("ko", "en", word)
+        info = {"lemma": word, "verbal": False, "notes": []}
 
-    base = gloss("ko", "en", info["lemma"])
-    if not base and info["lemma"] != word:
-        base = gloss("ko", "en", word)
+    candidates = [info["lemma"]]
+    if info["verbal"]:
+        candidates.append(info["lemma"][:-1])
+    if word not in candidates:
+        candidates.append(word)
+
+    base = None
+    try:
+        base = dict_meaning(candidates)
+    except Exception as e:
+        print(f"Korean dictionary unavailable: {type(e).__name__}", flush=True)
+
+    if not base:
+        base = gloss("ko", "en", info["lemma"])
+        if not base and info["lemma"] != word:
+            base = gloss("ko", "en", word)
+        if base and info["verbal"] and " " not in base and not base.startswith("to "):
+            base = "to " + base
 
     parts = []
     if base:
-        if info["verbal"] and " " not in base and not base.startswith("to "):
-            base = "to " + base
         text = base
         if info["lemma"] != word:
             text += f" ({info['lemma']})"
