@@ -1,7 +1,9 @@
-let spFlag, krFlag, PaperBG, logo;
+let spFlag, krFlag, enFlag, chFlag, PaperBG, logo;
 //image and background rect anim
-let spainBox = { x: 267, y: 480, w: 273, h: 180, r: 30, hover: 0 };
-let koreaBox = { x: 740, y: 480, w: 273, h: 180, r: 30, hover: 0 };
+let englishBox = { x: 40, y: 480, w: 240, h: 160, r: 30, hover: 0 };
+let spainBox = { x: 360, y: 480, w: 240, h: 160, r: 30, hover: 0 };
+let koreaBox = { x: 680, y: 480, w: 240, h: 160, r: 30, hover: 0 };
+let chinaBox = { x: 1000, y: 480, w: 240, h: 160, r: 30, hover: 0 };
 const pad = 8;
 
 let lang;
@@ -15,8 +17,10 @@ let newVideoURL = "";
 let inputActive2 = false;
 const urlBox2 = { x: 32, y: 55, w: 610, h: 42 };
 
-let spainBox2 = { x: 665, y: 53, w: 60, h: 42, r: 10, hover: 0 };
-let koreaBox2 = { x: 745, y: 53, w: 60, h: 42, r: 10, hover: 0 };
+let englishBox2 = { x: 665, y: 53, w: 60, h: 42, r: 10, hover: 0 };
+let spainBox2 = { x: 745, y: 53, w: 60, h: 42, r: 10, hover: 0 };
+let koreaBox2 = { x: 825, y: 53, w: 60, h: 42, r: 10, hover: 0 };
+let chinaBox2 = { x: 905, y: 53, w: 60, h: 42, r: 10, hover: 0 };
 
 let backspaceHeld = false;
 let backspaceHoldStart = 0;
@@ -50,6 +54,31 @@ function extractVideoID(url) {
   let regExp = /(?:youtube\.com.*(?:\?|&)v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
   let match = url.match(regExp);
   return match ? match[1] : null;
+}
+
+function partnerLang(l) {
+  return l === "en" ? "es" : "en";
+}
+
+function hitBox(box) {
+  return mouseX > box.x - pad && mouseX < box.x + box.w + pad &&
+         mouseY > box.y - pad && mouseY < box.y + box.h + pad;
+}
+
+function homeLangHit() {
+  if (hitBox(englishBox)) return "en";
+  if (hitBox(spainBox)) return "es";
+  if (hitBox(koreaBox)) return "ko";
+  if (hitBox(chinaBox)) return "zh";
+  return null;
+}
+
+function mainLangHit() {
+  if (hitBox(englishBox2)) return "en";
+  if (hitBox(spainBox2)) return "es";
+  if (hitBox(koreaBox2)) return "ko";
+  if (hitBox(chinaBox2)) return "zh";
+  return null;
 }
 
 window.onYouTubeIframeAPIReady = function () {
@@ -97,6 +126,12 @@ async function fetchTranscript(videoId, lang) {
   popup = null;
   cueLayouts = {};
 
+  if (lang === "zh") {
+    captionsError = "Chinese coming soon";
+    captionsLoading = false;
+    return;
+  }
+
   try {
     let res = await fetch(`/api/transcript?videoId=${videoId}&lang=${lang}`);
     let data = await res.json();
@@ -117,17 +152,23 @@ async function fetchTranscript(videoId, lang) {
 }
 
 async function lookUpWord(p) {
-  const from = captionsInTarget ? targetLang : "en";
-  const to = captionsInTarget ? "en" : targetLang;
+  const from = captionsInTarget ? targetLang : partnerLang(targetLang);
+  const to = from === "en" ? (targetLang === "en" ? "es" : targetLang) : "en";
+  let url = `/api/define?word=${encodeURIComponent(p.word)}&from=${from}&to=${to}`;
+  if (currentVideoId) {
+    url += `&videoId=${currentVideoId}&cue=${p.cueIndex}`;
+  }
   try {
-    let res = await fetch(`/api/define?word=${encodeURIComponent(p.word)}&from=${from}&to=${to}`);
+    let res = await fetch(url);
     let data = await res.json();
     if (popup !== p) return;
     if (data.error) {
       p.error = data.error;
     } else {
       p.original = data.original;
-      p.meaning = data.meaning;
+      p.meaning = data.meaning || "";
+      p.line = data.line || "";
+      p.lineLang = data.line_lang || "en";
     }
     p.loading = false;
   } catch (err) {
@@ -276,17 +317,24 @@ function drawPopup() {
   let wordCx = capPanel.x + 80 + popup.relX + popup.w / 2;
 
   let head = popup.original || popup.word;
-  let body;
-  let bodyColor;
+  let meaningText;
+  let meaningColor;
+  let lineText = "";
   if (popup.loading) {
-    body = "Looking up...";
-    bodyColor = 120;
+    meaningText = "Looking up...";
+    meaningColor = 120;
   } else if (popup.error) {
-    body = popup.error;
-    bodyColor = 120;
+    meaningText = popup.error;
+    meaningColor = 120;
   } else {
-    body = popup.meaning || "(no result)";
-    bodyColor = 0;
+    if (popup.meaning) {
+      meaningText = popup.meaning;
+      meaningColor = 0;
+    } else {
+      meaningText = "No word meaning";
+      meaningColor = 120;
+    }
+    lineText = popup.line ? (popup.lineLang || "en").toUpperCase() + ": " + popup.line : "";
   }
 
   push();
@@ -297,11 +345,15 @@ function drawPopup() {
   let headW = textWidth(head);
   textStyle(NORMAL);
   textFont("Courier New", 16);
-  let bodyLines = wrapText(body, 260);
+  let meaningLines = wrapText(meaningText, 260);
   let widest = headW;
-  for (let l of bodyLines) widest = max(widest, textWidth(l));
+  for (let l of meaningLines) widest = max(widest, textWidth(l));
+  textFont("Courier New", 14);
+  let contextLines = lineText ? wrapText(lineText, 260) : [];
+  for (let l of contextLines) widest = max(widest, textWidth(l));
   let boxW = constrain(widest + 32, 140, 300);
-  let boxH = 12 + 24 + bodyLines.length * capLineH + 12;
+  let contextH = contextLines.length > 0 ? 6 + contextLines.length * 18 : 0;
+  let boxH = 12 + 24 + meaningLines.length * capLineH + contextH + 12;
 
   let boxX = constrain(wordCx - boxW / 2, capPanel.x + 8, capPanel.x + capPanel.w - 8 - boxW);
   let below = wordBottom + 12 + boxH <= capPanel.y + capPanel.h;
@@ -326,9 +378,18 @@ function drawPopup() {
   text(head, boxX + 16, boxY + 12);
   textStyle(NORMAL);
   textFont("Courier New", 16);
-  fill(bodyColor);
-  for (let n = 0; n < bodyLines.length; n++) {
-    text(bodyLines[n], boxX + 16, boxY + 12 + 24 + n * capLineH);
+  fill(meaningColor);
+  let textY = boxY + 12 + 24;
+  for (let n = 0; n < meaningLines.length; n++) {
+    text(meaningLines[n], boxX + 16, textY + n * capLineH);
+  }
+  if (contextLines.length > 0) {
+    textFont("Courier New", 14);
+    fill(110);
+    let contextY = textY + meaningLines.length * capLineH + 6;
+    for (let n = 0; n < contextLines.length; n++) {
+      text(contextLines[n], boxX + 16, contextY + n * 18);
+    }
   }
   pop();
 
@@ -370,6 +431,8 @@ function handleCaptionClick() {
     w: hit.w,
     original: null,
     meaning: null,
+    line: "",
+    lineLang: "en",
     error: null,
     loading: true,
     openedAt: millis(),
@@ -388,6 +451,8 @@ async function setup() {
   createCanvas(1280, 720);
   spFlag = await loadImage("spain-flag.png");
   krFlag = await loadImage("south-korea-flag.png");
+  enFlag = await loadImage("english.jpg");
+  chFlag = await loadImage("china.jpg");
   PaperBG = await loadImage("PaperBG.jpg");
   logo = await loadImage("logotube.png");
 
@@ -469,38 +534,36 @@ function mousePressed() {
     if (screen === "home") {
     inputActive = isInsideUrlBox();
 
-    let spainHit = mouseX > spainBox.x - pad && mouseX < spainBox.x + spainBox.w + pad &&
-                   mouseY > spainBox.y - pad && mouseY < spainBox.y + spainBox.h + pad;
-    let koreaHit = mouseX > koreaBox.x - pad && mouseX < koreaBox.x + koreaBox.w + pad &&
-                   mouseY > koreaBox.y - pad && mouseY < koreaBox.y + koreaBox.h + pad;
-
-    if (videoURL.trim().length > 0) {
-      if (spainHit) { targetLang = "es"; screen = "main"; loadYouTubeVideo(videoURL); }
-      else if (koreaHit) { targetLang = "ko"; screen = "main"; loadYouTubeVideo(videoURL); }
+    let hitLang = homeLangHit();
+    if (videoURL.trim().length > 0 && hitLang) {
+      targetLang = hitLang;
+      screen = "main";
+      loadYouTubeVideo(videoURL);
     }
   }
 
   if (screen === "main") {
     inputActive2 = isInsideUrlBox2();
 
-    let spainHit2 = mouseX > spainBox2.x - pad && mouseX < spainBox2.x + spainBox2.w + pad &&
-                    mouseY > spainBox2.y - pad && mouseY < spainBox2.y + spainBox2.h + pad;
-    let koreaHit2 = mouseX > koreaBox2.x - pad && mouseX < koreaBox2.x + koreaBox2.w + pad &&
-                    mouseY > koreaBox2.y - pad && mouseY < koreaBox2.y + koreaBox2.h + pad;
-
+    let hitLang2 = mainLangHit();
     if (newVideoURL.trim().length > 0) {
-      if (spainHit2) { targetLang = "es"; videoURL = newVideoURL; newVideoURL = ""; loadYouTubeVideo(videoURL); }
-      else if (koreaHit2) { targetLang = "ko"; videoURL = newVideoURL; newVideoURL = ""; loadYouTubeVideo(videoURL); }
-    } else if (currentVideoId) {
-      if (spainHit2) { targetLang = "es"; captionsInTarget = true; fetchTranscript(currentVideoId, targetLang); }
-      else if (koreaHit2) { targetLang = "ko"; captionsInTarget = true; fetchTranscript(currentVideoId, targetLang); }
+      if (hitLang2) {
+        targetLang = hitLang2;
+        videoURL = newVideoURL;
+        newVideoURL = "";
+        loadYouTubeVideo(videoURL);
+      }
+    } else if (currentVideoId && hitLang2) {
+      targetLang = hitLang2;
+      captionsInTarget = true;
+      fetchTranscript(currentVideoId, targetLang);
     }
 
     let pillHit = mouseX > captionPill.x && mouseX < captionPill.x + captionPill.w &&
                   mouseY > captionPill.y && mouseY < captionPill.y + captionPill.h;
     if (pillHit && currentVideoId) {
       captionsInTarget = !captionsInTarget;
-      fetchTranscript(currentVideoId, captionsInTarget ? targetLang : "en");
+      fetchTranscript(currentVideoId, captionsInTarget ? targetLang : partnerLang(targetLang));
     }
 
     handleCaptionClick();
@@ -607,8 +670,10 @@ image(logo, 35, -40, 256, 144);
     line(cursorX + 4, urlBox.y + 15, cursorX + 4, urlBox.y + urlBox.h - 15);
   }
 
+  drawFlagButton(enFlag, englishBox);
   drawFlagButton(spFlag, spainBox);
   drawFlagButton(krFlag, koreaBox);
+  drawFlagButton(chFlag, chinaBox);
 }
 
 function drawMainScreen() {
@@ -618,8 +683,10 @@ function drawMainScreen() {
 image(logo, 35, -40, 256, 144);
   
   // small flag icons, top-right — reusing your existing rounded-image helper
+  drawFlagButton(enFlag, englishBox2);
   drawFlagButton(spFlag, spainBox2);
   drawFlagButton(krFlag, koreaBox2);
+  drawFlagButton(chFlag, chinaBox2);
 
   // weather bubble — replaces the old plain weather text, same pill style as the title bubble
   noStroke();
