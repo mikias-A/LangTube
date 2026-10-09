@@ -141,6 +141,15 @@ class MarianTranslation:
         return self.sp_tgt.decode_pieces(results[0].hypotheses[0])
 
 
+class PivotTranslation:
+    def __init__(self, first, second):
+        self.first = first
+        self.second = second
+
+    def translate(self, text):
+        return self.second.translate(self.first.translate(text))
+
+
 def get_marian():
     global marian_model
     with marian_lock:
@@ -367,6 +376,11 @@ def ensure_pair(src, dst):
 def get_translator(src, dst):
     key = (src, dst)
     if key in translators:
+        return translators[key]
+    if src != "en" and dst != "en" and src != dst:
+        translators[key] = PivotTranslation(
+            get_translator(src, "en"), get_translator("en", dst)
+        )
         return translators[key]
     if key == ("es", "en"):
         translators[key] = get_marian()
@@ -665,12 +679,15 @@ def korean_meaning(word):
     return " · ".join(parts) if parts else None
 
 
-def original_line(video_id, cue):
+def original_line(video_id, cue, shown_lang):
     try:
-        cues, _ = get_original(video_id)
-        return clean_for_translation(cues[int(cue)]["text"])
+        cues, original_lang = get_original(video_id)
+        code = original_lang.split("-")[0]
+        if code == shown_lang:
+            return "", code
+        return clean_for_translation(cues[int(cue)]["text"]), code
     except Exception:
-        return ""
+        return "", ""
 
 
 @app.route("/")
@@ -719,10 +736,12 @@ def define():
             if result:
                 define_cache[key] = result
                 meaning = result
-        line = original_line(video_id, cue) if video_id and cue != "" else ""
+        line, line_lang = ("", "")
+        if video_id and cue != "":
+            line, line_lang = original_line(video_id, cue, src)
         if not meaning and not line:
             return jsonify(error="No clear meaning")
-        return jsonify(original=word, meaning=meaning, line=line)
+        return jsonify(original=word, meaning=meaning, line=line, line_lang=line_lang)
     except TranslateError as e:
         return jsonify(error=str(e))
     except Exception as e:
