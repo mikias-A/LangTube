@@ -26,9 +26,62 @@ PREFIX_RE = re.compile(r"^\s*(word|palabra|단어)s?\s*[:：]?\s*", re.IGNORECAS
 MARIAN_REPO = "michaelfeil/ct2fast-opus-mt-es-en"
 MARIAN_DIR = os.path.join("models", "opus-mt-es-en")
 
+NOUN_TAGS = {"NNG", "NNP", "NNB", "NR", "NP"}
+PARTICLES = {
+    "은": "topic marker",
+    "는": "topic marker",
+    "이": "subject marker",
+    "가": "subject marker",
+    "을": "object marker",
+    "를": "object marker",
+    "에": "at / to / in",
+    "에서": "at / from",
+    "에게": "to (a person)",
+    "한테": "to (a person)",
+    "께": "to (honorific)",
+    "의": "'s (possessive)",
+    "와": "and / with",
+    "과": "and / with",
+    "랑": "and / with",
+    "이랑": "and / with",
+    "도": "also",
+    "만": "only",
+    "부터": "from",
+    "까지": "until / to",
+    "으로": "by / toward",
+    "로": "by / toward",
+    "보다": "than",
+    "처럼": "like",
+    "마다": "every",
+}
+ENDINGS = {
+    "고": "and / and then",
+    "지만": "but",
+    "는데": "background / but",
+    "니까": "because",
+    "으니까": "because",
+    "아서": "so / because",
+    "어서": "so / because",
+    "면": "if",
+    "으면": "if",
+    "려고": "in order to",
+    "게": "so that / -ly",
+    "습니다": "formal polite ending",
+    "ㅂ니다": "formal polite ending",
+    "요": "polite ending",
+    "았": "past tense",
+    "었": "past tense",
+    "겠": "will / intention",
+    "시": "honorific",
+    "기": "noun-maker",
+    "음": "noun-maker",
+}
+
 pack_lock = threading.Lock()
 marian_lock = threading.Lock()
+kiwi_lock = threading.Lock()
 marian_model = None
+kiwi_obj = None
 translators = {}
 define_cache = {}
 broken_pairs = set()
@@ -98,6 +151,16 @@ def get_marian():
                 raise TranslateError("Spanish model missing")
         marian_model = MarianTranslation(MARIAN_DIR)
         return marian_model
+
+
+def get_kiwi():
+    global kiwi_obj
+    with kiwi_lock:
+        if kiwi_obj is None:
+            from kiwipiepy import Kiwi
+
+            kiwi_obj = Kiwi()
+        return kiwi_obj
 
 
 def merge_cues(cues):
@@ -303,6 +366,14 @@ def preload():
                 print(f"{src} -> {dst} still broken. Restart the server once to be sure.", flush=True)
         except Exception as e:
             print(f"Problem with {src} -> {dst}: {e}", flush=True)
+    try:
+        get_kiwi()
+        print("Korean word splitter ready.", flush=True)
+    except Exception as e:
+        print(
+            f"Korean word splitter not available ({type(e).__name__}). Install it with: python -m pip install kiwipiepy",
+            flush=True,
+        )
     print("Language packs ready.", flush=True)
 
 
@@ -387,11 +458,11 @@ def get_cues(video_id, lang):
     return translation_cache[key]
 
 
-def tidy_meaning(meaning, word):
+def tidy_meaning(meaning, word, force_lower=False):
     meaning = meaning.strip()
     if meaning.endswith(".") and not word.endswith("."):
         meaning = meaning[:-1]
-    if word[:1].islower() and meaning[:1].isupper() and not meaning[:2].isupper():
+    if (word[:1].islower() or force_lower) and meaning[:1].isupper() and not meaning[:2].isupper():
         meaning = meaning[:1].lower() + meaning[1:]
     return meaning
 
@@ -424,8 +495,74 @@ def gloss(src, dst, word):
             continue
         if out.lower() == lower:
             continue
-        return tidy_meaning(out, word)
+        return tidy_meaning(out, word, src == "ko")
     return None
+
+
+def analyze_korean(word):
+    tokens = get_kiwi().tokenize(word)
+    forms = [t.form for t in tokens]
+    tags = [t.tag.split("-")[0] for t in tokens]
+    print(f"kiwi {word!r}: {list(zip(forms, tags))}", flush=True)
+
+    notes = []
+    for form, tag in zip(forms, tags):
+        if tag.startswith("J") and form in PARTICLES:
+            notes.append(f"{form}: {PARTICLES[form]}")
+        elif tag.startswith("E") and form in ENDINGS:
+            notes.append(f"{form}: {ENDINGS[form]}")
+
+    verbal_idx = None
+    for i, tag in enumerate(tags):
+        if tag in ("VV", "VA", "XSV", "XSA"):
+            verbal_idx = i
+            break
+
+    if verbal_idx is not None:
+        stem = forms[verbal_idx]
+        if (
+            tags[verbal_idx] in ("XSV", "XSA")
+            and verbal_idx > 0
+            and (tags[verbal_idx - 1] in NOUN_TAGS or tags[verbal_idx - 1] == "XR")
+        ):
+            stem = forms[verbal_idx - 1] + stem
+        return {"lemma": stem + "다", "verbal": True, "notes": notes}
+
+    lead = []
+    for form, tag in zip(forms, tags):
+        if tag in NOUN_TAGS:
+            lead.append(form)
+        elif lead:
+            break
+        elif tag in ("MAG", "MM", "IC", "MAJ"):
+            lead = [form]
+            break
+    lemma = "".join(lead) or word
+    return {"lemma": lemma, "verbal": False, "notes": notes}
+
+
+def korean_meaning(word):
+    try:
+        info = analyze_korean(word)
+    except Exception as e:
+        print(f"Korean analysis unavailable: {type(e).__name__}", flush=True)
+        return gloss("ko", "en", word)
+
+    base = gloss("ko", "en", info["lemma"])
+    if not base and info["lemma"] != word:
+        base = gloss("ko", "en", word)
+
+    parts = []
+    if base:
+        if info["verbal"] and " " not in base and not base.startswith("to "):
+            base = "to " + base
+        text = base
+        if info["lemma"] != word:
+            text += f" ({info['lemma']})"
+        parts.append(text)
+    if info["notes"]:
+        parts.append("; ".join(info["notes"]))
+    return " · ".join(parts) if parts else None
 
 
 def original_line(video_id, cue):
@@ -475,7 +612,10 @@ def define():
     try:
         meaning = define_cache.get(key, "")
         if not meaning:
-            result = gloss(src, dst, word)
+            if src == "ko" and dst == "en":
+                result = korean_meaning(word)
+            else:
+                result = gloss(src, dst, word)
             if result:
                 define_cache[key] = result
                 meaning = result
