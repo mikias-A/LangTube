@@ -1,1 +1,8 @@
+flask
 requests
+youtube-transcript-api>=1.0
+argostranslate
+ctranslate2
+sentencepiece
+huggingface_hub
+kiwipiepy
