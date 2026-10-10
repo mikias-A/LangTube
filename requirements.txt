@@ -1,4 +1,3 @@
 flask
 requests
 youtube-transcript-api
-argos-translate   
