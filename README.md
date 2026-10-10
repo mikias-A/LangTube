@@ -12,7 +12,7 @@ A web app built mainly on JavaScript, Python/Flask and p5.js that takes a YouTub
 ## Setup
 
 ```bash
-git clone https://github.com/bob-R/langtube.git
+git clone https://github.com/mikias-A/langtube.git
 cd langtube
 pip install -r requirements.txt
 ```
