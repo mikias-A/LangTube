@@ -6,7 +6,6 @@ A web app built mainly on JavaScript, Python/Flask and p5.js that takes a YouTub
 
 Everything runs on your own computer. Nothing is hosted online, and the server only listens on your own machine.
 
-![demo](demo.gif)
 
 ## What you need
 
