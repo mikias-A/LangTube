@@ -52,6 +52,7 @@ Press Ctrl+C in the terminal, then close the browser tab.
 
 - Works on desktop browsers. Phones and tablets aren't supported.
 - The first translation of a video takes a little while. After that, the result is saved on your computer.
+- Excessive usage can lead to a temporary API request block, to which it will have to be waited out before being used again.
 
 ## Credits
 
