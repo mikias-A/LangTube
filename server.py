@@ -57,6 +57,24 @@ CEDICT_RE = re.compile(r"^(\S+)\s+(\S+)\s+\[([^\]]*)\]\s+/(.*)/\s*$")
 ZH_MAX = 8
 SKIP_DEF_STARTS = ("variant of", "old variant of", "surname ", "see ", "also written")
 
+PUNCT_MAP = {
+    "，": ",",
+    "。": ".",
+    "？": "?",
+    "！": "!",
+    "：": ":",
+    "；": ";",
+    "、": ",",
+    "“": '"',
+    "”": '"',
+    "‘": "'",
+    "’": "'",
+    "（": "(",
+    "）": ")",
+    "…": "...",
+    "—": "-",
+}
+
 NOUN_TAGS = {"NNG", "NNP", "NNB", "NR", "NP"}
 PARTICLES = {
     "은": "topic marker",
@@ -405,6 +423,10 @@ def pinyin_marks(numbered):
     return " ".join(mark_syllable(s) for s in numbered.split())
 
 
+def pinyin_word(numbered):
+    return "".join(mark_syllable(s) for s in numbered.split())
+
+
 def is_cjk(ch):
     return "\u3400" <= ch <= "\u9fff"
 
@@ -436,6 +458,44 @@ def segment_zh(text, entries):
             segs.append((i, i + 1))
             i += 1
     return segs
+
+
+def pinyin_tokens(text, entries):
+    tokens = []
+    for s, e in segment_zh(text, entries):
+        seg = text[s:e]
+        if is_cjk(seg[0]):
+            cands = entries.get(seg)
+            tok = pinyin_word(cands[0]["pinyin"]) if cands else seg
+            tokens.append({"t": tok, "i": s, "p": False})
+        elif seg.isalnum():
+            tokens.append({"t": seg, "i": s, "p": False})
+        else:
+            tokens.append({"t": PUNCT_MAP.get(seg, seg), "i": s, "p": True})
+    return tokens
+
+
+def get_pinyin_cues(video_id):
+    zh_cues = get_cues(video_id, "zh")
+    entries = get_cedict()
+    out = []
+    for c in zh_cues:
+        tokens = pinyin_tokens(c["text"], entries)
+        line = ""
+        for t in tokens:
+            if line and not t["p"]:
+                line += " "
+            line += t["t"]
+        out.append(
+            {
+                "start": c["start"],
+                "end": c["end"],
+                "text": line,
+                "zh": c["text"],
+                "tokens": tokens,
+            }
+        )
+    return out
 
 
 def short_def(d, limit=40):
@@ -1028,6 +1088,8 @@ def transcript():
     if not video_id:
         return jsonify(error="Missing videoId")
     try:
+        if lang == "py":
+            return jsonify(cues=get_pinyin_cues(video_id))
         return jsonify(cues=get_cues(video_id, lang))
     except TranslateError as e:
         print(f"Translation problem: {e}", flush=True)
