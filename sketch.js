@@ -45,9 +45,13 @@ let scrollOffset = 0;
 
 let targetLang = "es";
 let captionsInTarget = true;
+let zhShown = "zh";
 let currentVideoId = null;
 let captionRequestId = 0;
 const captionPill = { x: 841, y: 663, w: 384, h: 39 };
+const zhPillL = { x: 841, y: 663, w: 186, h: 39 };
+const zhPillR = { x: 1039, y: 663, w: 186, h: 39 };
+const VIEW_LABELS = { en: "EN", zh: "CN", py: "PY" };
 
 let popup = null;
 let wordBoxes = [];
@@ -126,8 +130,39 @@ function partnerLang(l) {
   return l === "en" ? "es" : "en";
 }
 
+// which language the caption panel is showing right now: es, ko, zh, py (pinyin), or en
+function shownLang() {
+  if (targetLang === "zh") return zhShown;
+  return captionsInTarget ? targetLang : partnerLang(targetLang);
+}
+
 function isZhView() {
-  return captionsInTarget && targetLang === "zh";
+  return targetLang === "zh" && zhShown === "zh";
+}
+
+function isPinyinView() {
+  return targetLang === "zh" && zhShown === "py";
+}
+
+// the two Chinese views the pills can switch to (every view except the current one)
+function zhPillViews() {
+  return ["en", "zh", "py"].filter(v => v !== zhShown);
+}
+
+function resetView() {
+  captionsInTarget = true;
+  zhShown = "zh";
+}
+
+function setZhView(v) {
+  zhShown = v;
+  captionsInTarget = v !== "en";
+  fetchTranscript(currentVideoId, v);
+}
+
+function hitRect(r) {
+  return mx() > r.x && mx() < r.x + r.w &&
+         my() > r.y && my() < r.y + r.h;
 }
 
 function hitBox(box) {
@@ -162,7 +197,7 @@ window.onYouTubeIframeAPIReady = function () {
 
 function createOrLoadPlayer(videoId) {
   currentVideoId = videoId;
-  captionsInTarget = true;
+  resetView();
   if (!ytPlayer) {
     ytPlayer = new YT.Player("videoPlayer", {
       videoId: videoId,
@@ -216,14 +251,17 @@ async function fetchTranscript(videoId, lang) {
 }
 
 async function lookUpWord(p) {
-  const from = captionsInTarget ? targetLang : partnerLang(targetLang);
+  const shown = shownLang();
+  const from = shown === "py" ? "zh" : shown;
   const to = from === "en" ? (targetLang === "en" ? "es" : targetLang) : "en";
   let url = `/api/define?word=${encodeURIComponent(p.word)}&from=${from}&to=${to}`;
   if (currentVideoId) {
     url += `&videoId=${currentVideoId}&cue=${p.cueIndex}`;
   }
-  if (from === "zh" && captionCues[p.cueIndex]) {
-    url += `&text=${encodeURIComponent(captionCues[p.cueIndex].text)}&pos=${p.idx}`;
+  let cue = captionCues[p.cueIndex];
+  if (from === "zh" && cue) {
+    let zhText = shown === "py" ? (cue.zh || "") : cue.text;
+    url += `&text=${encodeURIComponent(zhText)}&pos=${p.idx}`;
   }
   try {
     let res = await fetch(url);
@@ -282,6 +320,18 @@ function getLayout(i) {
       items.push({ text: tok, x: x, line: line, w: ww, idx: m.index });
       x += ww;
       prevEnd = m.index + tok.length;
+    }
+  } else if (isPinyinView() && captionCues[i].tokens) {
+    for (let t of captionCues[i].tokens) {
+      let ww = textWidth(t.t);
+      if (!(ww > 0)) ww = 9.6 * t.t.length;
+      if (x > 0 && !t.p) x += spaceW;
+      if (x > 0 && x + ww > maxW) {
+        line++;
+        x = 0;
+      }
+      items.push({ text: t.t, x: x, line: line, w: ww, idx: t.i });
+      x += ww;
     }
   } else {
     let words = str.split(/\s+/).filter(w => w.length > 0);
@@ -377,7 +427,7 @@ function drawCaptions(panelX, panelY, panelW, panelH) {
         if (selected) {
           noStroke();
           fill(43, 251, 236, 170);
-          if (popup.range) {
+          if (popup.range && isZhView()) {
             rect(wx, wy - 1, it.w, capLineH, 0);
           } else {
             rect(wx - 3, wy - 1, it.w + 6, capLineH, 5);
@@ -635,6 +685,18 @@ function drawFlagButton(img, box) {
   drawRoundedImage(img, box.x, box.y, box.w, box.h, box.r);
 }
 
+function drawPill(p, label) {
+  fill(255);
+  stroke(0);
+  strokeWeight(0);
+  rect(p.x, p.y, p.w, p.h, 19);
+  noStroke();
+  fill(0);
+  textFont("Courier New", 15);
+  textAlign(CENTER, CENTER);
+  text(label, p.x + p.w / 2, p.y + p.h / 2);
+}
+
 function isInsideUrlBox() {
   return mx() > urlBox.x && mx() < urlBox.x + urlBox.w &&
          my() > urlBox.y && my() < urlBox.y + urlBox.h;
@@ -680,15 +742,22 @@ function mousePressed() {
       }
     } else if (currentVideoId && hitLang2) {
       targetLang = hitLang2;
-      captionsInTarget = true;
+      resetView();
       fetchTranscript(currentVideoId, targetLang);
     }
 
-    let pillHit = mx() > captionPill.x && mx() < captionPill.x + captionPill.w &&
-                  my() > captionPill.y && my() < captionPill.y + captionPill.h;
-    if (pillHit && currentVideoId) {
-      captionsInTarget = !captionsInTarget;
-      fetchTranscript(currentVideoId, captionsInTarget ? targetLang : partnerLang(targetLang));
+    if (currentVideoId) {
+      if (targetLang === "zh") {
+        let views = zhPillViews();
+        if (hitRect(zhPillL)) {
+          setZhView(views[0]);
+        } else if (hitRect(zhPillR)) {
+          setZhView(views[1]);
+        }
+      } else if (hitRect(captionPill)) {
+        captionsInTarget = !captionsInTarget;
+        fetchTranscript(currentVideoId, captionsInTarget ? targetLang : partnerLang(targetLang));
+      }
     }
 
     handleCaptionClick();
@@ -877,16 +946,14 @@ image(logo, 35, -40, 256, 144);
 
   drawCaptions(841, 130, 384, 516);
 
-   // captions language pill, bottom of the panel
-  fill(255);
-  stroke(0);
-  strokeWeight(0);
-  rect(841, 663, 384, 39, 19);
-  noStroke();
-  fill(0);
-  textFont("Courier New", 15);
-  textAlign(CENTER, CENTER);
-  text("Flip Captions", captionPill.x + captionPill.w / 2, captionPill.y + captionPill.h / 2);
+  // caption flip pills, bottom of the panel
+  if (targetLang === "zh") {
+    let views = zhPillViews();
+    drawPill(zhPillL, "Flip: " + VIEW_LABELS[views[0]]);
+    drawPill(zhPillR, "Flip: " + VIEW_LABELS[views[1]]);
+  } else {
+    drawPill(captionPill, "Flip Captions");
+  }
 
   drawPopup();
 }
